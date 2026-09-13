@@ -7,80 +7,75 @@ maturin develop && pytest -q
 ship-rs-build
 ```
 
-Rebuild the extension after Rust or embedded-descriptor changes before Python tests. `cargo check` alone does not refresh the installed extension.
-`schema/metadata.json` is included in uv's cache keys, so descriptor changes automatically invalidate cached builds; local testing still uses the explicit
-`maturin develop` workflow. Do not independently rebuild the shared extension from parallel workers.
+Run `maturin develop` after Rust or embedded-descriptor changes to refresh the installed extension before Python tests. Coordinate parallel workers around one rebuild of the shared extension. `schema/metadata.json` is included in uv's cache keys and changes invalidate cached builds.
 
-## Current foundation
+## Architecture
 
-* `src/xml.rs`: internal ordered mutable arena using quick-xml 0.42's decoding reader and events; no separate XML crate or backend abstraction.
-  Generic XML well-formedness checks supplement event parsing. Stable node identities survive unrelated edits; deleted/replaced IDs are never reused.
-  Ordinary edits preflight local/affected-subtree constraints, mutate live storage and invalidate cached serialization; bytes/save serialize on demand.
-  Both `Tree` and package XML parts use this same editor. There is no general rollback framework or per-setter full-part clone.
-* `src/package.rs`: ZIP/OPC read/create/edit/save, relationship-based main discovery, scoped content-type/relationship changes and untouched payload copying.
-  OPC control XML uses the same XML tree and serializer as document parts; package-specific code checks content-type/relationship rules only.
-* `src/schema.rs`: contextual dispatch and partial generic particle/lexical/version/semantic interpretation directly over the live XML tree.
-  One immutable index derives contextual child lookups, semantic-rule dispatch and namespace availability from the shared descriptor.
-  Content models compile once, including versioned occurrences; the bounded matcher uses contiguous position sets rather than per-position tree allocations.
-  Validation resolves types through the effective compatibility view while preserving raw node identities and every stored branch.
-  Dependencies are borrowed live XML trees, not serialized/reparsed copies; reference/uniqueness checks share compatibility-aware traversal.
-  Reference-value sets and duplicate tracking are local to each validation call, so edits and different targets need no cache invalidation.
-* `python/oxml/model.py`: SDK-derived nominal classes/enums and typed properties; contextual lookup follows the requested node's ancestors through indexed declarations.
-  A view's successful type check is reused only while the native XML revision is unchanged. Every edit requires a fresh check before that view's next access, with node-level
-  immutable raw snapshots produced on demand rather than rebuilding whole-part snapshots after every mutation. Scalar QName/attribute reads use native getters,
-  avoiding serialization of a container's child list just to inspect its name or attributes. Calling a live element attaches one detached expression and returns
-  its new typed child. Cached schema-order slots distinguish ordered sequences from unordered/repeatable content groups; automatic insertion preserves existing order.
-* `python/oxml/build.py`: SDK namespace lookup and parsed-element snapshots for fastcore's namespace-aware XML builder. `E(prefix='', attr_ns=None, ns=None)` configures a factory; `e = E('w', attr_ns='w')` is the WordprocessingML preset. `e.tag(*children, **attrs)` returns a detached `XML` expression. Children accept expressions, parsed `Element` views, strings, ordered collections and omitted `None` values. Parsed children become namespace-complete snapshots at construction, unaffected by later source edits or invalidation. IDs remain unchanged and package dependencies are not copied. Caller-provided raw XML bytes are not accepted as children.
-  Factories resolve names at construction and each expression keeps its own bindings. `ns` supplies custom/default and value-only prefix bindings. Keyword attributes use `attr_ns`; `prefix__name` selects an explicit prefix and `attrs_` accepts literal names. Python keywords use a trailing underscore, including `e.del_()`. Attribute values are lexical, not typed setters; booleans serialize as `true`/`false` and `None` is omitted. Name, namespace and character checks run at construction. `bytes()` serializes without formatting whitespace; `parent(expression)` runs the native XML/resource checks and attaches the subtree once. The generic fastcore builder remains schema-free.
-* `python/oxml/document.py`: `Document`, `Package` and `Part`; one cached mutable tree per canonical part name, automatic flush at save and invalidation
-  after part replacement/removal. Equivalent case spellings resolve to the same state. A per-call relationship walk serves separate story enumeration and
-  reachable-part validation, resolving already-read targets without reparsing relationships per ID. Imported part declarations drive package constraints/root checks.
-  `_part` shares declared-part discovery/creation among conveniences.
-* `python/oxml/text.py`: a read-only story projection and revision-checked ranges over live elements. Run-boundary splitting and replacement-run construction
-  are shared by text replacement, comments, links and revisions; there is no second mutable document model or persistent position tracker.
-* `python/oxml/paragraphs.py`: ordinary split/join and multiline replacement within one immediate container. Tracked paragraph edits reuse the same helpers.
-* `python/oxml/comments.py`: classic anchors/bodies and supported modern reply/resolution/deletion metadata, with relationship-discovered parts and scoped IDs.
-* `python/oxml/revisions.py`, `formatting.py`: text, paragraph-boundary and explicit property history operations. Bulk operations preflight unsupported families;
-  author/date/ID generation and revision dispatch are shared rather than implemented separately per operation.
-* `python/oxml/styles.py`, `numbering.py`: explicit definitions/references, shared schema-order insertion and numbered-list instances, not a style/counter renderer.
-* `python/oxml/tables.py`, `links.py`: bounded rectangular-table edits and bookmark/hyperlink lifecycle using existing elements, ranges and scoped relationships.
-* `python/oxml/importing.py`: per-import dependency/collision maps and detached selected-subtree staging; no persistent registry or whole-package merge engine.
-* `python/oxml/compare.py`: standard-library text differencing plus existing revision/property operations; one original-document clone becomes the result.
-* `tests/test_xml.py`, `test_package.py`, `test_document.py`: parser/editor safety, real archive round trips and integrated open–edit–validate–save.
-  `test_probe.py` and `test_holdout.py` retain the difficult imported schema and previously unexamined-feature regressions.
+The Rust layer owns XML, packages and validation:
 
-### Editing and preservation contracts
+* `src/xml.rs` stores ordered XML nodes in a mutable arena. It parses with quick-xml 0.42's decoding reader and checks XML well-formedness. Standalone trees, package parts and OPC control XML all use this editor and serializer.
+* `src/package.rs` reads and writes ZIP/OPC packages. It discovers the main part through relationships, manages content types and relationships, and copies untouched payloads on save.
+* `src/schema.rs` interprets the imported SDK content models, lexical constraints, versions and semantic rules against live XML trees.
 
-`Tree.xml` is the raw native editor. `root`, `document_children()`, `children(id)` and `parent(id)` expose ordered identities; `node(id)` returns a JSON snapshot
-whose `children` contains all child node IDs, including text/comments/PIs. `Element.children` returns only element views. `set_text`, expanded-name
-`set_attribute`/`remove_attribute`, `rename`, `declare_namespace`, insertion, `delete`, `replace_node`,
-`copy` and `move_node` operate on that state. Element-level Python structural methods use child-content indexes, counting text/comments/PIs as well as elements.
-Copies allocate new IDs. Deletion/replacement invalidates subtree IDs; moving preserves them. A contextual typed view rejects access after its type changes.
-`parent(expression)` places a new child after others in its schema slot and before later slots. It refuses unknown/wildcard/ambiguous placement and existing
-unknown or out-of-order children before mutation; it never repairs order or enforces full content/cardinality/version validity. `parent(expression, index=n)`
-bypasses automatic placement and uses the exact raw child-node index, including text/comments/PIs. This is also the route for untyped XML and deliberate invalid fixtures.
-`Element.qname` returns the expanded `(namespace_uri, local_name)` pair; it and `Element.attribute` read scalar native values rather than full node snapshots.
-`copy_to(parent, index=None)` can import XML across trees through namespace-complete subtree export, including an explicit empty default namespace when needed.
-It does not transfer package dependencies or remap relationship/document-wide IDs. Cross-tree movement remains unsupported.
+The schema layer builds one immutable index for contextual child lookup, semantic-rule dispatch and namespace availability. Content models compile once, including versioned occurrences. Their bounded matcher uses contiguous position sets. Validation borrows live dependency trees and uses compatibility-aware traversal for reference and uniqueness checks. Reference-value sets and duplicate tracking belong to each validation call.
 
-All in-scope namespace bindings are retained, including bindings used only in opaque attribute values. Ordinary name edits cannot silently rebind an existing
-prefix; use a fresh prefix or explicit namespace operation. Renaming to an unqualified element necessarily clears its default namespace. Descendant contexts
-are retained. Text replacement requires text-only content; structural APIs handle mixed content explicitly. Comments/PI payloads follow XML line-ending
-normalization. DTDs/custom entities, XML 1.1 and encodings other than UTF-8/UTF-16 are refused. Edited serialization uses UTF-8 and may change namespace placement,
-quote/empty-element style and CDATA boundaries. There is no byte-patching engine or byte-identical edited-subtree promise.
+The Python layer exposes that state and implements document operations:
 
-`Package.read_part` returns current edited XML bytes when loaded. `add_part`, `replace_part`, `remove_part`, `set_content_type`, `relationships`,
-`relationship_part`, `add_relationship` and `remove_relationship` provide byte-oriented package operations. Use `/` for package relationships and an absolute
-part URI for part-scoped relationships. Relationship resolution never fetches external targets. Metadata parts cannot be overwritten through ordinary part APIs.
-Removing a part removes its own relationship file, matching content-type overrides and inbound internal relationships, not other payloads. No garbage collection
-or normalization runs on untouched parts. New documents use the normal DOCX main content type; DOCM/templates are not edited under a DOCX label.
+* `model.py` generates SDK-derived classes, enums and typed properties. It resolves contextual types through ancestor declarations and handles schema-order insertion.
+* `build.py` adds SDK namespace lookup and parsed-element snapshots to fastcore's XML builder.
+* `document.py` exposes `Document`, `Package` and `Part`. It caches one mutable tree per canonical part name, flushes edits at save and invalidates views after part replacement or removal. Equivalent case spellings resolve to the same tree. Story enumeration and validation share a per-call relationship walk over cached part trees. Imported part declarations supply package constraints and root checks. `_part` shares part discovery and creation among document operations.
+* `text.py` projects story text and tracks the XML revision associated with each range. Text replacement, comments, links and revisions share its run-splitting and replacement-run helpers.
+* `paragraphs.py` implements paragraph splits, joins and multiline replacement. Tracked paragraph edits use these helpers too.
+* `comments.py` maintains comment anchors, bodies, replies and resolution metadata in relationship-discovered parts.
+* `revisions.py` and `formatting.py` implement text, paragraph-boundary and property-history operations. They share author/date/ID generation and revision dispatch.
+* `styles.py` and `numbering.py` manage style definitions, references and numbered-list instances.
+* `tables.py` and `links.py` implement rectangular-table edits, bookmarks and hyperlinks.
+* `importing.py` stages selected subtrees and keeps dependency and ID-collision maps for each import.
+* `compare.py` uses standard-library text differencing and the revision/property APIs to edit a clone of the original document.
 
-Unchanged XML and package bytes are returned exactly, including original UTF-16 and ZIP layout. Merely loading/typing/validating XML does not dirty it.
-Edited archives copy unchanged compressed payloads, checking their CRC/declared sizes before output. Untouched no-op archives are not eagerly inflated solely
-for CRC checking. Corruption is caught when an affected part is read or when saving a changed package. Signed archives are read-only except unchanged saves.
-Path saves construct output before writing a temporary file beside the destination, then sync and atomically replace it.
+Python module paths are relative to `python/oxml/`.
 
-### Resource and archive boundaries
+## XML construction
+
+`E(prefix='', attr_ns=None, ns=None)` configures a factory. `e = E('w', attr_ns='w')` is the WordprocessingML preset. `e.tag(*children, **attrs)` builds a detached `XML` expression using fastcore's namespace-aware builder.
+
+Children can be expressions, parsed `Element` views, strings or ordered collections. `None` children are omitted. Parsed children capture namespace-complete snapshots at construction that survive later source edits or invalidation. Raw XML bytes must be parsed before use as children.
+
+Factories resolve names at construction and each expression retains its own bindings. `ns` supplies custom and default namespace bindings, including prefixes used inside opaque attribute values. Keyword attributes use `attr_ns`. `prefix__name` selects an explicit prefix and `attrs_` accepts literal names. A trailing underscore escapes Python keywords, as in `e.del_()`.
+
+Factory attributes are serialized as XML text values. Booleans become `true` or `false`, and `None` attributes are omitted. Construction checks XML names, namespaces and characters. `.bytes()` serializes the expression without adding formatting whitespace.
+
+`parent(expression)` attaches one expression in one native edit and returns its new typed child. It places the child after others in its schema slot and before later slots, preserving existing order. Cached slots distinguish ordered sequences from unordered or repeatable content groups. Schema placement belongs to oxml's live parent API.
+
+Automatic placement requires an unambiguous slot and existing children in known schema order. Unknown children, wildcard models and ambiguous positions require `parent(expression, index=n)`. The explicit index counts every XML child node, including text, comments and processing instructions. It also supports untyped XML and deliberately invalid fixtures. Attachment runs the native XML and resource checks.
+
+## Editing and preservation contracts
+
+`Tree.xml` is the native mutable editor. `root`, `document_children()`, `children(id)` and `parent(id)` expose ordered node identities. `node(id)` returns a JSON snapshot whose `children` includes IDs for elements, text, comments and processing instructions. `Element.children` filters these to element views.
+
+`set_text`, expanded-name `set_attribute`/`remove_attribute`, `rename`, `declare_namespace`, insertion, `delete`, `replace_node`, `copy` and `move_node` all operate on the same tree. Python structural methods use indexes into the full XML child-node sequence.
+
+Edits preflight the affected nodes, mutate live storage and invalidate cached serialization. Bytes are serialized when requested. The editing API has no transaction rollback.
+
+Node IDs survive unrelated edits and movement. Copies allocate new IDs. Deletion or replacement invalidates subtree IDs permanently. A typed view checks its contextual type after each XML revision. Reacquire the view if a move changes that type. `element.raw` produces an immutable node snapshot on demand. `Element.qname` returns the expanded `(namespace_uri, local_name)` pair. It and `Element.attribute` use scalar native getters.
+
+`copy_to(parent, index=None)` copies XML within or across trees. The default index is the parent's raw child count. Cross-tree copies export the subtree with its namespace context, including an empty default namespace where needed. Both copies and construction snapshots retain relationship and document IDs unchanged. Use `import_content` for supported package-dependency transfer and ID remapping. `move_to(parent, index)` moves an element within one tree.
+
+Edits retain in-scope namespace bindings, including bindings used only in opaque attribute values. Renaming to an unqualified element clears its default namespace while preserving descendant contexts. Use a fresh prefix or an explicit namespace operation when a name edit would conflict with an existing binding.
+
+Text replacement requires text-only content. Use structural operations for mixed content. Comment and processing-instruction payloads follow XML line-ending normalization. Edited serialization uses UTF-8 and can change namespace placement, quote style, empty-element syntax and CDATA boundaries.
+
+### Packages and saving
+
+`Package.read_part` returns current edited XML bytes for a loaded part. `add_part`, `replace_part`, `remove_part` and `set_content_type` manage parts. `relationships`, `relationship_part`, `add_relationship` and `remove_relationship` manage links between parts. Use `/` for package relationships and an absolute part URI for part-scoped relationships. External relationship targets are retained as references and are never fetched.
+
+Use package-specific APIs to change OPC metadata. Ordinary part APIs reject overwrites of metadata parts. Removing a part also removes its relationship file, matching content-type overrides and inbound internal relationships. All other payloads remain untouched. `Document.new()` creates a DOCX package with the normal main-document content type.
+
+Loading, typing and validating XML leave its original bytes unchanged. An unchanged save returns the original XML or package bytes, including UTF-16 encoding and ZIP layout. Changed archives retain untouched compressed payloads. CRC and declared-size checks run when reading affected parts or writing a changed archive. An unchanged save passes through the archive without inflating its entries. Signed packages support unchanged saves and reject edits.
+
+Path saves construct the output, write a temporary file beside the destination, sync it and atomically replace the destination.
+
+## Resource and archive boundaries
 
 | Input/operation | Explicit limits or refusals |
 | --- | --- |
@@ -89,65 +84,93 @@ Path saves construct output before writing a temporary file beside the destinati
 | ZIP | 512 MiB archive; 10,000 entries; 256 MiB per payload; 1 GiB total uncompressed |
 | Archive formats | Stored/Deflated only; no encryption, ZIP64, multidisk, prefixed executables, symlinks, overlapping entries or equivalent/unsafe part names |
 
-Malformed input and structural preconditions are rejected before mutation. Aggregate namespace-context and serialized-byte limits are checked when output
-is serialized, so an accepted edit can cause bytes/save to fail; the live tree remains available for correction. Namespace additions and structural operations
-may inspect affected descendants, but ordinary setters do not traverse/copy/serialize the entire part. These are bounded foundation safeguards, not a fuzzing
-or adversarial security certification. Shared-document concurrent editing, constant-time mutations and a streaming package writer are not promised.
+XML input is limited to XML 1.0 in UTF-8 or UTF-16. DTDs and custom entities are refused. Macro-enabled and template packages are refused.
 
-### Text/review scope
+Malformed input and failed structural preconditions are rejected before mutation. Aggregate namespace-context and serialized-byte limits are checked during serialization. An accepted edit can therefore cause bytes/save to fail. The live tree remains available for correction.
 
-`Document.story`, `.comments`, `.revisions`, `.styles`, `.numbering`, `.bookmarks` and `.hyperlinks` are live entry points, not alternate document models.
-`doc.stories(view=...)` yields each reachable main/header/footer/individual note/comment story, including note separators, with an owning `part_uri`.
-Stories use Python Unicode positions, `\n` between visible paragraph boundaries, `\t` for tabs, `\v` for line breaks, and U+FFFC for unsupported structures.
-Current/original views select insertion/deletion text and paragraph boundaries without changing stored XML; original ranges are read-only.
-Bookmarks, comment anchors/references and annotation labels contribute no text. Every XML mutation invalidates prior ranges; consuming a revision invalidates its handle.
+Ordinary setters operate on the affected nodes. Namespace changes and structural operations can inspect affected descendants. The package writer constructs output in memory. Shared-document concurrent editing is unsupported. The limits above have not been established as sufficient by fuzzing or an adversarial security audit.
 
-Ordinary neighboring text can be edited while other revisions remain in the paragraph. Revision payloads/property-history runs and hyperlink wrappers are protected;
-fields, content controls, textboxes, moves and revised table containers remain outside range editing. Replacement formatting comes from the first affected run, with an ordinary neighboring
-run used for carets. Run isolation only splits boundaries unless a destructive caller explicitly requests reference extraction. Text replacement retains enclosing
-anchors and collapses interior anchors to replacement end; adding hyperlinks instead moves the entire selected XML slice, preserving interior marker positions.
-Multiline edits require consecutive sibling paragraphs in one container, no section breaks or table-container crossings. Joins keep the last paragraph's properties
-and identity; splits create a new left paragraph without duplicating paragraph IDs. No generic rollback/transaction layer is introduced.
+## Text/review scope
 
-Comments support plain-text bodies, main-story anchors, reply links through the last comment paragraph's `paraId`, and per-comment resolution. Existing
-commentsIds/commentsExtensible records receive corresponding durable-ID/UTC entries; classic documents are not automatically upgraded to every modern part.
-Unknown metadata is retained and ambiguous/incomplete required linkage is refused. `.range` locates anchored current text; `.delete()` removes the comment/reply
-subtree and linked records, `.delete_thread()` starts at the thread root. Empty parts remain. Matching anchors outside the main XML cause a preflight refusal.
-Numeric comment IDs are compared numerically, including padded lexical forms. Mentions/application identities are not inferred.
+### Text ranges
 
-Tracked edits emit actual `w:ins`/`w:del` and `w:delText`, with paragraph-boundary marks in `pPr/rPr`. Direct formatting records use `rPrChange`/`pPrChange` snapshots;
-paragraph history retains independent paragraph-mark/section properties. Author/date metadata is explicit; dates default to UTC and supplied dates must be aware.
-IDs avoid existing values in the containing XML tree. Table/move/conflict/nested histories and final paragraph marks remain unsupported.
+`doc.story.find(text)` searches literal text across runs. `doc.stories(view=...)` yields each reachable main, header, footer, individual note and comment story, including note separators. Each story carries its owning `part_uri`.
 
-Import remaps explicit dependencies, complete bookmark ranges and known drawing/paragraph/list IDs without overwriting destination definitions. Destination theme
-and document defaults remain authoritative. Unsupported review, field, section and dependency contexts are refused, including revised containing cells/rows.
-Only inherited `mc:Ignorable` is carried automatically; other inherited MC directives require explicit handling. Comparison uses existing edit operations, retains
-original metadata and rejects unsupported dependency/content differences. Its paragraph-count path requires uniform direct properties; it is not Word comparison parity.
+Stories use Python Unicode positions, `\n` between visible paragraph boundaries, `\t` for tabs, `\v` for line breaks and U+FFFC for unsupported structures. Bookmarks, comment anchors/references and annotation labels have zero width. Current and original views select insertion/deletion text and paragraph boundaries while leaving stored XML unchanged. `Story(element, view='original')` provides a read-only original view. Every edit to a story's XML tree invalidates its ranges.
 
-### Validation scope
+Ordinary text beside revisions remains editable. Range editing protects revision payloads, property-history runs and hyperlinks. Fields, content controls, textboxes, moves and revised table containers are outside its supported scope. Replacement text takes the first affected run's formatting. A caret insertion uses an ordinary neighboring run's formatting.
 
-Validation reports completeness false; this is not a full SDK validator port. Remaining gaps include unsupported regex syntax/list facets, versioned enum
-values, decimal precision rounding, legacy date/time fragments, particle filtering and unsupported semantic-rule families. `Document.validate()` walks reachable
-relationships, checks declared package constraints and part roots, then validates each recognized XML part once with actual dependency/relationship context.
-Issues and skipped regions identify their part URI; `scope.part_uris` lists validated XML. Missing targets and malformed secondary XML are errors as well as
-incomplete checking. Unknown extension payloads remain opaque. Standalone `Tree.validate(dependencies=...)` accepts part-name → live `Tree` mappings.
-Malformed dependency XML fails when constructing its tree; `Document.validate()` reports malformed parts explicitly. Structural editing does not enforce
-schema validity; validate after edits. Strict namespaces remain raw/unknown rather than being silently converted.
+Run isolation splits boundaries and retains references unless the caller explicitly requests their extraction. Text replacement retains enclosing anchors and collapses interior anchors to the replacement's end. Hyperlink insertion moves the selected XML slice together, preserving interior marker positions.
 
-Integers retain exact comparisons; floating-point values use floating-point lexical/bound checks, and decimal handling follows the SDK's validation behavior.
-Attribute and element-text constraints share one interpreter. Required attributes respect availability, `IsInitialVersion` and `IsRequired=False`.
-BooleanValue validation and Python getters share native parsing, including surrounding XML whitespace; OnOffValue retains the SDK's exact-token rules.
-Compatibility directives control the effective validation view, not stored XML. Like SDK standalone validation, `MustUnderstand` checks declared prefixes;
-unsupported-namespace enforcement during application loading is not claimed. Exact expanded names distinguish qualified from unqualified attributes.
+Multiline edits require consecutive sibling paragraphs in one container. Section breaks and table-container crossings are refused. Joins retain the last paragraph's properties and identity. Splits create a new left paragraph and remove its copied `paraId` and `textId` attributes.
 
-Local tests do not establish current Word interoperability, stable ABI or free-threading support. CI installs and tests the built Linux/macOS CPython 3.10–3.13
-wheels before publishing. There is no separate, duplicative editable-install CI test job.
+### Comments
+
+Comments support plain-text bodies, main-story anchors, replies and per-comment resolution. Replies link through the last comment paragraph's `paraId`. Existing `commentsIds` and `commentsExtensible` records receive matching durable-ID and UTC entries. Classic documents are not automatically upgraded to every modern metadata part. Unknown metadata is retained. Ambiguous or incomplete required linkage is refused. Mention and application-identity generation is unsupported.
+
+`doc.comments[id]` looks up a comment by numeric ID, accepting padded lexical forms. `comment.range` returns its anchored current text. `.delete()` removes the comment's reply subtree, linked records and anchors. `.delete_thread()` starts at the thread root. Empty parts and unrelated package content remain. Matching anchors outside the main XML cause deletion to fail during preflight.
+
+### Tracked changes
+
+`doc.revisions` exposes inline insertions/deletions, paragraph-boundary changes and run/paragraph property histories. Each revision supports `accept()` and `reject()`. Applying either operation invalidates the revision handle. Bulk `accept_all()` and `reject_all()` preflight the whole story and refuse unsupported families. Use `Revisions(story)` for another explicit story.
+
+Tracked text edits emit `w:ins`, `w:del` and `w:delText`. Paragraph-boundary marks go in `pPr/rPr`. `doc.revisions.format(run, e.rPr(e.b()), author='Drafter')` records a direct formatting change with `rPrChange` or `pPrChange` snapshots. Its `.previous` and `.current` expose the properties. Paragraph history retains independent paragraph-mark and section properties.
+
+Author/date metadata is explicit. Dates default to UTC and supplied dates must be timezone-aware. New revision IDs avoid existing values in the containing XML tree. Table, move, conflict and nested histories, and final paragraph marks, remain unsupported.
+
+## Document helpers
+
+`doc.styles` finds and creates styles, then applies references while retaining direct formatting.
+
+`doc.numbering.add([Level(), Level(format='lowerLetter')])` creates a multilevel list. Reuse the returned instance with `.apply(paragraph, level=...)` to continue it. `.restart(start=...)` creates a separate instance and leaves the original list unchanged.
+
+`Table.add(body, [['Clause', 'Response']], widths=[4000, 4000])` creates a rectangular table. `Table(element)` exposes rows, cells and row/column edits. Use `Story(cell)` for cell text. Structural operations refuse merged, offset or revised grids. Removal refuses cells containing bookmarks or comments.
+
+`doc.bookmarks.add(span, 'clause')` creates a bookmark with `.range` and `.remove()`. Its `.ref(text)` creates detached REF markup with a cached result.
+
+`doc.hyperlinks.add(span, '#clause')` links existing formatted text to a bookmark. A URL instead creates an external link. `.remove()` unwraps the text and removes unused relationships in the owning part. Hyperlink text remains visible in the story but protected from range edits while wrapped.
+
+Style inheritance, displayed list counters, field evaluation and layout are left to the application reading the document.
+
+## Import and compare
+
+`import_content` copies selected paragraphs and tables with their explicit style, numbering, image and hyperlink dependencies:
+
+```python
+from oxml import import_content, w
+
+blocks = list(source.main.xml.elements(w.Paragraph))[:2]
+body = next(destination.main.xml.elements(w.Body))
+import_content(source, blocks, destination, body)
+```
+
+Import remaps conflicting identifiers and preserves complete bookmark ranges. Destination definitions, themes and document defaults remain in effect. Unsupported review, field, section and dependency contexts are refused, including revised containing cells and rows. Inherited `mc:Ignorable` is carried automatically. Other inherited MC directives require explicit handling.
+
+`compare` matches stored text and direct run/paragraph properties, then returns a new document containing tracked differences. It preserves both originals and leaves equal opaque blocks untouched. Original metadata and revision-session bookkeeping are retained.
+
+Paragraph-count changes require uniform matching direct properties and a paragraph-only body apart from final section properties. Changed tables, sections, dependencies and unresolved revisions are refused. Move detection and comparison of rendered appearance are unsupported.
+
+## Validation scope
+
+Run `doc.validate()` after editing. It walks reachable relationships, checks declared package constraints and part roots, and validates each recognized XML part once with its dependency and relationship context. Issues and skipped regions identify their part URI. `scope.part_uris` lists the XML parts checked. Missing targets and malformed secondary XML are reported as errors. Unknown extension payloads remain opaque.
+
+Reports mark validation as incomplete. Gaps include some regex syntax and list facets, versioned enum values, decimal precision rounding, legacy date/time fragments, particle filtering and semantic-rule families. Inspect the reported gaps alongside errors when deciding whether a document meets your requirements.
+
+Standalone `Tree.validate(dependencies=...)` accepts a mapping from part names to live `Tree` objects. Malformed dependency XML fails at tree construction. `Document.validate()` reports malformed parts explicitly.
+
+Attribute and element-text constraints share one interpreter. Integer comparisons are exact. Floating-point values use floating-point lexical and bound checks. Decimal handling follows SDK behavior. Required attributes respect availability, `IsInitialVersion` and `IsRequired=False`. `BooleanValue` validation and Python getters share native parsing, including surrounding XML whitespace. `OnOffValue` follows the SDK's exact-token rules. Expanded names distinguish qualified and unqualified attributes.
+
+Typed setters refuse invalid or incompletely checked constraints. Raw lexical edits remain available for unsupported cases. Structural edits permit incomplete or schema-invalid content while a document is being assembled.
+
+Compatibility directives select the effective validation view while preserving stored XML nodes and branches. `MustUnderstand` checks declared prefixes. Application-loading enforcement for unsupported namespaces is unimplemented.
+
+Strict DOCX package discovery is supported. Strict XML namespaces remain available as raw XML and have no conversion to the Transitional typed vocabulary. The imported vocabulary includes shared and non-DOCX schemas. Validation and editing support are limited to the operations documented here. XLSX editing is unimplemented.
 
 ## SDK import
 
-`scripts/import_sdk.py` reads the pinned SDK JSON and C# primitive table without modifying reference checkouts or requiring .NET. It rejects unknown
-fields/mechanisms and unresolved child references before writing `schema/metadata.json`, which is compiled into the native extension.
-Native validation and Python facade generation consume this one descriptor. SDK notices are retained in `python/oxml/SDK-LICENSE`.
+`scripts/import_sdk.py` reads pinned SDK JSON and C# primitive definitions from a reference checkout. It checks for unknown fields or mechanisms and unresolved child references before writing `schema/metadata.json`. The reference checkout stays unchanged. The importer runs without .NET.
+
+The descriptor is compiled into the native extension and supplies both validation rules and Python type generation. SDK notices are retained in `python/oxml/SDK-LICENSE`.
 
 ```bash
 python scripts/import_sdk.py
@@ -155,24 +178,25 @@ maturin develop
 pytest -q
 ```
 
-The default SDK revision is `431ab05cf160248cc3885a4a766026d4f8243792`; `--sdk`, `--revision` and `--output` override the source and destination.
-Only regeneration requires the reference clone. Ordinary builds use the checked-in descriptor. The imported vocabulary includes shared/non-DOCX schemas,
-not an XLSX support declaration. The source target remains SDK parity, without a second schema-source or historical-audit pipeline.
+The default SDK revision is `431ab05cf160248cc3885a4a766026d4f8243792`. `--sdk`, `--revision` and `--output` override the source and destination. Regeneration requires the reference checkout. Ordinary builds use the checked-in descriptor.
+
+The source policy targets parity with the pinned SDK. Independent standards conformance has not been audited.
 
 ## Tests
 
-`test_sdk_attributes.py`, `test_sdk_particles.py`, `test_sdk_mc.py` and `test_sdk_semantics.py` adapt upstream SDK inputs and expected behavior into
-self-contained Python tests. Source comments identify the original tests; running these cases requires neither reference clones nor .NET.
-The initially expected failures now pass. Future unsupported cases must retain their actual expected behavior rather than asserting that reporting a gap is validation.
-`test_text.py`, `test_comments.py` and `test_revisions.py` exercise the public APIs using real DOCX inputs, independent XML/endpoint expectations and untouched-part
-checks. These are structural/preservation tests; they do not launch Word or claim application interoperability.
+`test_xml.py`, `test_package.py` and `test_document.py` cover parser/editor safety, archive round trips and open-edit-validate-save workflows. `test_probe.py` and `test_holdout.py` cover difficult imported-schema cases and holdout regressions.
 
-`tests/fixtures/` contains unchanged original DOCX files and upstream notices. Generic package no-op tests cover every original recursively, including ZIPs
-with directory entries, which are not parts. `tests/fixtures/README.md` maps files to their upstream sources and shared notices; keep it current when borrowing fixtures.
-The 16 tests in `test_corpus_body.py`, `test_corpus_reviews.py` and `test_corpus_crosspart.py` independently mutate expected minidom trees and compare expanded
-names, attributes, effective namespace bindings and ordered content; every untouched payload must remain byte-identical. Derivatives live only in test memory
-and temporary output files. These tests establish preservation of stored review structures, not review operations, schema validity, rendering or Word behavior.
-Historical feasibility notes stay in `meta/`, which must never be added to Git.
+`test_sdk_attributes.py`, `test_sdk_particles.py`, `test_sdk_mc.py` and `test_sdk_semantics.py` adapt SDK inputs and expected behavior into self-contained Python tests. Source comments identify the upstream cases. They run without reference checkouts or .NET. Tests for unsupported cases must retain the SDK's expected outcome, with validation gaps reported separately.
+
+`test_text.py`, `test_comments.py` and `test_revisions.py` exercise public APIs with real DOCX inputs, independent XML and endpoint expectations, and untouched-part checks.
+
+`tests/fixtures/` contains unchanged original DOCX files and upstream notices. Package no-op tests cover every original recursively, including ZIPs with directory entries. Package part enumeration excludes those directory entries. Keep the source and license mappings in `tests/fixtures/README.md` current when borrowing fixtures.
+
+`test_corpus_body.py`, `test_corpus_reviews.py` and `test_corpus_crosspart.py` independently edit expected minidom trees and compare expanded names, attributes, effective namespace bindings and ordered content. Untouched payloads must remain byte-identical. Derived documents stay in test memory or temporary output files. These tests check preservation of stored structures.
+
+CI installs and tests the built Linux/macOS CPython 3.10-3.13 wheels before publishing. The test suite runs without launching Word. Current Word interoperability, a stable Python ABI and free-threading support remain unverified.
+
+Keep historical feasibility notes in `meta/` and exclude them from Git.
 
 ## Versioning
 
@@ -188,4 +212,4 @@ uv builds and `maturin develop --release` use the incremental `release` profile 
 2. Ensure all changes are committed and pushed and the working tree is clean.
 3. Run `ship-release`.
 
-Fastship pushes the version tag for GitHub Actions, then bumps and pushes `Cargo.toml`. CI builds and publishes the distributions and generates GitHub release notes; there is no local changelog step.
+Fastship pushes the version tag for GitHub Actions, then bumps and pushes `Cargo.toml`. CI builds and publishes the distributions and generates GitHub release notes.

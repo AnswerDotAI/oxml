@@ -1,44 +1,50 @@
 # oxml
 
-Rust/Python Office Open XML client. Python is the primary API; no .NET runtime is required.
+Create and edit Word DOCX files from Python, including text, tables, comments and tracked changes. oxml uses a Rust XML editor and types derived from Microsoft's Open XML SDK. It requires neither .NET nor Office.
 
-## Open, edit and save
+## Edit a document
 
 ```python
-from oxml import Document, E, e, w
+from oxml import Document
 
 doc = Document.open('draft.docx')
-tree = doc.main.xml
-text = next(tree.elements(w.Text))
-text.value = 'A targeted replacement'
-report = doc.validate()
-print(report['issues'], report['coverage']['gaps'])
+doc.story.find('fourteen days').replace('twenty-one days')
 doc.save('edited.docx')
 ```
 
-`Document.new()` creates a minimal DOCX. `Tree(xml_bytes)` opens standalone XML. The pinned SDK descriptors expose 4,119 nominal element types and 582 enums, with contextual typing, typed attributes and partial structural/semantic validation. A name such as `w:del` resolves using its parent context.
+Search works across text runs, so a phrase need not have uniform formatting. Replacement preserves surrounding formatting and uses the first affected run's format for the new text. Find the text again after each edit: ranges refer to a particular version of the XML.
 
-Typed views and `tree.xml` raw editing use **one mutable XML state**. Ordinary edits preserve element handles; deleting/replacing a node invalidates its views. Moving a node can change its contextual type, requiring a new typed view but retaining its raw `node_id`. `element.raw` is an immutable snapshot.
+`doc.story` is the main document text. `doc.stories()` also gives access to headers, footers, notes and comments. `Story(element, view='original')` reads the text before tracked changes without accepting or rejecting them.
+
+Replacement can split and join adjacent paragraphs using `\n`, but cannot cross section or table-cell boundaries. Bookmarks and comment anchors survive text edits. Fields, content controls and existing revision payloads are protected from ordinary text replacement.
+
+## Build and edit XML
+
+Use `Document.new()` to start a document, or `Tree(xml_bytes)` to work with standalone XML.
 
 ```python
-body = next(tree.elements(w.Body))
+from oxml import Document, e, w
+
+doc = Document.new()
+body = next(doc.main.xml.elements(w.Body))
 paragraph = body(e.p(e.r(e.t('New paragraph'))))
-properties = paragraph(e.pPr(e.jc(val='center')))
+paragraph(e.pPr(e.jc(val='center')))
+doc.save('new.docx')
 ```
 
-`e` is the WordprocessingML factory, configured as `E('w', attr_ns='w')`. Use `e.tcW(type='dxa', w=2400)` for qualified element and attribute names. Explicit attribute prefixes use double underscores: `r__id='rId1'` and `xml__space='preserve'`. `attrs_` accepts literal attribute names without adding a prefix. Other factories can leave attributes unqualified, such as `E('a').blip(r__embed='rId1')`. SDK prefixes resolve automatically; `E(ns=bindings)` supplies custom namespaces. Each expression retains its factory's namespace bindings when nested.
+`e.p(...)` builds a detached XML expression. Calling a live parent, such as `body(...)`, attaches it and returns the new live element. Placement follows the schema: paragraph properties go before runs, and paragraphs go before final section properties. Existing content is never rearranged. Use `parent(expression, index=n)` when you need an exact XML child-node position or the schema order is unknown.
 
-Factories build detached `XML` expressions using fastcore's namespace-aware builder. Expressions accept parsed `Element` children alongside nested expressions, text, ordered collections and omitted `None` values. Parsed children capture their XML at construction; later source edits do not affect them. `.bytes()` serializes an expression.
+The `e` factory supplies the `w` namespace for elements and attributes. For example, `e.tcW(type='dxa', w=2400)` creates a table-cell width. Other attribute prefixes use double underscores, such as `r__id` and `xml__space`. Configure another namespace with `E('a')`, or custom bindings with `E(ns=bindings)`.
 
-Calling a live parent attaches one expression and returns its new live child. Placement follows the parent's schema: the paragraph goes before final section properties, and its `pPr` goes before its runs, without reordering existing content. `parent(expression, index=n)` instead selects an exact XML child-node position, counting text/comments/PIs too. Unknown or ambiguous schema order requires an explicit index. Placement is not full schema validation; use `doc.validate()` to check edits. Existing live nodes use explicit `copy_to` or `move_to` operations. Snapshots and cross-tree copies preserve XML namespace context, but do not copy package dependencies or remap relationship/document IDs.
+You can also work directly with typed elements. For example, `next(doc.main.xml.elements(w.Text)).value = 'Replacement'` changes one text node. Typed attributes check values against SDK rules and refuse constraints they cannot fully check. Raw XML editing remains available for those cases.
 
-The internal quick-xml editor supports ordered elements, attributes, text, comments and processing instructions; namespace-aware insertion, deletion, replacement, copying and movement; and UTF-8/UTF-16 input. Ordinary edits use preflight checks and in-place mutation, not whole-part cloning or serialization. Serialization is deferred until bytes/save are requested; aggregate output limits can fail then. No-op XML keeps its original bytes; edited XML is serialized as UTF-8, preserving unknown content and namespace meaning rather than original formatting or CDATA boundaries. Mixed-content text replacement is refused.
+The XML editor supports elements, attributes, text, comments and processing instructions, with namespace-aware copying and movement. It reads UTF-8 and UTF-16. Typed views and raw XML edits share the same live tree.
 
-`doc.package` exposes parts, content types and scoped relationships. The main part is discovered through the package relationship, not a fixed filename. Untouched package saves are byte-identical, and changed saves retain untouched payloads without garbage collection. Saving to a path uses atomic replacement. Opaque and embedded payloads remain bytes; they do not require dedicated editing APIs.
+See [Editing and preservation contracts](DEV.md#editing-and-preservation-contracts) for copying, namespaces and raw XML operations.
 
-## Text and reviews
+## Comments and tracked changes
 
-`doc.story` exposes current main-story text, literal search across runs, and Unicode character ranges. `Story(element, view='original')` provides a read-only original view without accepting/rejecting stored revisions. `doc.stories()` enumerates separate body, header/footer, note and comment stories, each carrying its live element and owning `part_uri`. `span.replace(text)` preserves unaffected formatting; new text takes the first affected run's format. Any XML edit makes existing ranges stale, so find/select again before the next edit.
+Add a comment to a text range:
 
 ```python
 doc = Document.open('draft.docx')
@@ -48,7 +54,9 @@ comment.resolve()
 doc.save('commented.docx')
 ```
 
-Comments are indexed by ID (`doc.comments[id]`). Replies and resolution maintain supported modern paragraph/durable-ID linkage and preserve other metadata. `comment.range` finds its anchored text; `comment.delete()` removes its reply subtree, while `delete_thread()` removes the whole thread. Deletion removes linked metadata and anchors, not unrelated parts. Main-part anchors are supported; deletion refuses matching anchors in other stored stories. An independent tracked-edit workflow:
+Comments support plain-text bodies, replies, resolution and deletion of individual reply subtrees or whole threads. Comment anchors are currently supported in the main document. Modern reply and resolution metadata is maintained alongside the comment text.
+
+Record a replacement as a tracked change:
 
 ```python
 doc = Document.open('draft.docx')
@@ -56,45 +64,42 @@ doc.revisions.replace(doc.story.find('fourteen days'), 'twenty-one days', author
 doc.save('redlined.docx')
 ```
 
-Iterating `doc.revisions` exposes inline insertions/deletions, paragraph-boundary changes and run/paragraph property histories; each supports `accept()`/`reject()`. Bulk `accept_all()`/`reject_all()` preflight the story and refuse unsupported families rather than silently skipping them. `Revisions(story)` handles another explicit story. `doc.revisions.format(run, e.rPr(e.b()), author='Drafter')` tracks a direct formatting change; `.previous`/`.current` expose its properties.
+Tracked changes cover text insertions and deletions, paragraph splits and joins, and direct run/paragraph formatting. Iterate over `doc.revisions` to accept or reject individual changes. `accept_all()` and `reject_all()` handle a whole story. Use `doc.revisions.format(...)` to track formatting changes.
 
-Ordinary text beside existing revisions is editable; editing inside/across a revision requires explicit acceptance/rejection first. `\n` replacement supports paragraph splits/joins among adjacent sibling paragraphs, but not section or table-container boundaries. Joins retain the last paragraph's properties. Bookmarks/comment anchors are zero-width and survive text edits: enclosing anchors retain replacement text, and interior anchors collapse to its end. Fields, content controls, moves and opaque payloads remain protected; unsupported text structures appear as U+FFFC. These are stored-text views, not rendering.
+Editing inside an existing revision requires accepting or rejecting it first. Table, move and nested revision histories are not supported. Bulk operations refuse unsupported revision types rather than silently skipping them. See [Text/review scope](DEV.md#textreview-scope) for the detailed rules.
 
-## Document conveniences
+## Styles, lists, tables and links
 
-* `doc.styles` finds/creates styles and applies references without replacing direct formatting.
-* `doc.numbering.add([Level(), Level(format='lowerLetter')])` creates a multilevel list. Reuse the returned instance with `.apply(paragraph, level=...)` to continue it; `.restart(start=...)` creates a separate instance without changing the original list.
-* `Table.add(body, [['Clause', 'Response']], widths=[4000, 4000])` creates a rectangular table. `Table(element)` exposes rows/cells and row/column edits; use `Story(cell)` for cell text. Structural operations refuse merged/offset/revised grids, and removal refuses cells containing bookmarks/comments.
-* `doc.bookmarks.add(span, 'clause')` creates a bookmark with `.range`, `.remove()` and `.ref(text)` for detached REF markup with a cached result.
-* `doc.hyperlinks.add(span, '#clause')` or `.add(span, 'https://example.com/')` links existing formatted text. `.remove()` unwraps it and removes unused relationships in the owning part. Hyperlink text is visible but protected from range edits while wrapped.
+* `doc.styles` finds, creates and applies paragraph, character and table styles without replacing direct formatting.
+* `doc.numbering` creates multilevel lists and controls continuation or restart.
+* `Table.add(...)` creates rectangular tables. `Table(element)` provides row and column edits. Structural edits do not support merged, offset or revised grids.
+* `doc.bookmarks` creates, finds and removes bookmarks and builds REF fields.
+* `doc.hyperlinks` adds and removes internal or external links while retaining the text's formatting. Linked text is protected from range edits until the link is removed.
 
-These APIs manipulate explicit OOXML; they do not compute style inheritance, displayed list counters, field results or layout.
+These helpers edit the document's XML. They do not calculate layout, inherited formatting, displayed list numbers or field results. Usage details are in [Document helpers](DEV.md#document-helpers).
 
-## Import and compare
+## Compare and import documents
+
+Compare two documents to produce a new document with tracked text and direct-formatting changes:
 
 ```python
-from oxml import import_content, compare, w
+from oxml import Document, compare
 
-blocks = list(source.main.xml.elements(w.Paragraph))[:2]
-body = next(destination.main.xml.elements(w.Body))
-import_content(source, blocks, destination, body)
-
-redline = compare(original, revised, author='Reviewer')
+redline = compare(Document.open('original.docx'), Document.open('revised.docx'), author='Reviewer')
 redline.save('comparison.docx')
 ```
 
-`import_content` copies selected paragraphs/tables with explicit style/numbering dependencies, images and hyperlinks. It remaps conflicting identifiers, keeps complete bookmark ranges and carries inherited `mc:Ignorable` namespace meaning. It never overwrites destination definitions; destination themes and document defaults still apply. Review/field/section/unsupported package dependencies are refused, rather than silently dropped. This is not whole-package merging.
+The originals stay unchanged, and equal tables and other opaque blocks are retained. Comparison supports body-text and direct-formatting changes. It refuses changes to tables, sections or dependencies, and documents with unresolved revisions. Changes to paragraph counts require matching direct paragraph properties and a paragraph-only body apart from final section properties.
 
-`compare` returns a new document with tracked body-text and direct run/paragraph formatting differences, preserving the originals. Equal opaque blocks remain untouched. Paragraph-count changes currently require uniform matching direct properties and a paragraph-only body (apart from final section properties). Changed tables, sections, dependencies and unresolved revisions are refused. Routine metadata/revision-session bookkeeping is retained from the original. Comparison uses stored text/properties, not rendered appearance, move detection or Word's complete comparison semantics.
+`import_content(...)` copies selected paragraphs and tables between documents, including their style, numbering, image and hyperlink dependencies. It preserves complete bookmark ranges and remaps conflicting IDs without overwriting destination definitions. Destination themes and document defaults still apply. Content with reviews, fields, sections or unsupported package dependencies is refused. See [Import and compare](DEV.md#import-and-compare) for the detailed rules.
 
-## Current boundaries
+## Preservation and limits
 
-* Validation is **incomplete**, with errors and unchecked regions reported separately. No reported errors does not establish validity. `Document.validate()` checks reachable package relationships and validates declared XML parts with their actual dependency context, including secondary parts. Issues identify their part URI; malformed XML and opaque/unchecked regions remain explicit. Standalone validation accepts live `Tree` dependencies. This is not complete SDK validation. Compatibility processing selects a validation view without removing stored branches.
-* Typed setters refuse invalid or incompletely checked constraints. Raw lexical edits remain available for unsupported cases. Numeric, pattern, list and union checks share the imported rules; remaining dialect and semantic gaps are explicit. BooleanValue getters and validation accept surrounding XML whitespace; OnOffValue requires exact tokens, matching the SDK.
-* Vocabulary coverage, validation coverage and operation support are separate. Strict DOCX package discovery works, but Strict XML namespaces are not converted to Transitional typed vocabulary. Table/move revision operations, XLSX and rendering remain unimplemented.
-* Signed packages permit unchanged pass-through only. Encrypted, macro-enabled/template, ZIP64, multidisk and unsafe archives are refused. Shared-document concurrent editing, a stable Python ABI and current Word interoperability are not established. CI is configured to install/test the actual Linux/macOS CPython 3.10–3.13 wheels before publication; local source tests alone do not establish that platform matrix.
+Saving an unchanged document returns the original bytes. Edited saves retain untouched package payloads. XML edits preserve namespace meaning and unknown content. Edited XML is serialized as UTF-8 without retaining its original formatting. `doc.package` gives access to parts, content types and relationships.
 
-The source policy targets SDK parity using pinned SDK JSON, relevant C# information and small explicit supplements—not an independent standards audit. `scripts/import_sdk.py` regenerates the shared descriptor; ordinary builds and installed packages do not need an SDK checkout. The curated corpus contains 18 original DOCX files, with targeted editing tests for body structures, review metadata and secondary parts. Independent XML comparisons and exact untouched-payload checks provide preservation evidence, not application interoperability claims. See [DEV.md](DEV.md) for implementation boundaries, resource limits and reproducible verification.
+`doc.validate()` checks XML structure, attribute values, supported semantic rules and package relationships, including headers, footers and other reachable parts. Errors and unchecked regions are reported separately. Validation is incomplete: a report without errors does not establish that a document is valid.
+
+Current document support focuses on DOCX. XLSX editing and conversion of Strict XML namespaces to the typed vocabulary are not implemented. Signed documents can pass through unchanged but cannot be edited. Encrypted, macro-enabled and template documents, ZIP64 and multidisk archives are refused. See [DEV.md](DEV.md) for resource limits, validation gaps and development commands.
 
 ## License and acknowledgements
 
