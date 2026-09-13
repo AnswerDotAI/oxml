@@ -4,7 +4,7 @@ Parameter IDs name the upstream tests; retain their outcomes, not .NET error wor
 SDK MIT notice: python/oxml/SDK-LICENSE. Every group pairs valid and invalid inputs.
 """
 import pytest
-from oxml import E, Tree, w
+from oxml import E, Tree, e, w
 
 
 @pytest.mark.parametrize('name,attribute,good,bad', [
@@ -39,7 +39,7 @@ from oxml import E, Tree, w
 def test_attribute_values(name, attribute, good, bad):
     for valid, values in [(True, good), (False, bad)]:
         for value in values:
-            tree = Tree(E(name, attrs={attribute: value}).bytes())
+            tree = Tree(E()(name, attrs_={attribute: value}).bytes())
             assert tree.root.type_id is not None
             errors = [i for i in tree.validate(target='Office2007')['issues'] if i['category'] == 'schema']
             if valid: assert not errors, (value, errors)
@@ -52,12 +52,12 @@ def test_attribute_values(name, attribute, good, bad):
 def test_boolean_getters_share_validation_but_onoff_does_not_trim():
     # SDK BooleanValue.Parse uses XmlConvert; OnOffValue.Parse accepts exact tokens only.
     for value, expected in [(' true\t', True), ('\n0\r', False)]:
-        tree = Tree(E('c:overlay', attrs={'val': value}).bytes())
+        tree = Tree(E('c').overlay(val=value).bytes())
         assert tree.root.val is expected and not tree.validate()['issues']
         tree.root.val = not expected
         assert tree.root.val is not expected
-    assert Tree(E('w:b', attrs={'w:val': 'on'}).bytes()).root.val is True
-    tree = Tree(E('w:b', attrs={'w:val': ' true '}).bytes())
+    assert Tree(e.b(val='on').bytes()).root.val is True
+    tree = Tree(e.b(val=' true ').bytes())
     with pytest.raises(ValueError): _ = tree.root.val
     assert tree.validate()['issues']
 
@@ -71,7 +71,7 @@ def test_changed_attribute_type(target, good, bad):
     # ChangedAttributeValueTypeValidationO14SupportTest: integer -> integer/percentage union.
     for valid, values in [(True, good), (False, bad)]:
         for value in values:
-            tree = Tree(E('w:zoom', attrs={'w:percent': value}).bytes())
+            tree = Tree(e.zoom(percent=value).bytes())
             errors = [i for i in tree.validate(target=target)['issues'] if i['category'] == 'schema']
             assert bool(errors) != valid, (target, value, errors)
             if errors: assert all(i['node'] == tree.root.node_id and i['expected']['QName'] == 'w:percent' for i in errors)
@@ -80,7 +80,7 @@ def test_changed_attribute_type(target, good, bad):
 def test_custom_xml_ncname_attribute():
     # NcnameAttributeValidationTest: CustomXmlRun needs paragraph context when parsed.
     for value, valid in [('a', True), ('_b-a', True), ('A'*255, True), ('a:b', False), ('A'*256, False)]:
-        tree = Tree(E('w:p', E('w:customXml', attrs={'w:element': value})).bytes())
+        tree = Tree(e.p(e.customXml(element=value)).bytes())
         node = next(tree.elements(w.CustomXmlRun))
         errors = [i for i in tree.validate(target='Office2007')['issues'] if i['category'] == 'schema']
         assert bool(errors) != valid, (value, errors)
@@ -90,7 +90,7 @@ def test_custom_xml_ncname_attribute():
 def test_element_text_pattern():
     # StringPatternAttributeValidationTest actually validates VTCurrency's element text.
     for value, valid in [('.1234', True), (' .1234 ', True), ('456.1234', True), ('', False), ('12.345', False), ('12.34567', False)]:
-        tree = Tree(E('vt:cy', value).bytes())
+        tree = Tree(E('vt').cy(value).bytes())
         errors = [i for i in tree.validate(target='Office2007')['issues'] if i['category'] == 'schema']
         assert bool(errors) != valid, (value, errors)
         if errors: assert all(i['node'] == tree.root.node_id for i in errors)

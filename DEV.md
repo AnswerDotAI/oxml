@@ -28,12 +28,10 @@ Rebuild the extension after Rust or embedded-descriptor changes before Python te
 * `python/oxml/model.py`: SDK-derived nominal classes/enums and typed properties; contextual lookup follows the requested node's ancestors through indexed declarations.
   A view's successful type check is reused only while the native XML revision is unchanged. Every edit requires a fresh check before that view's next access, with node-level
   immutable raw snapshots produced on demand rather than rebuilding whole-part snapshots after every mutation. Scalar QName/attribute reads use native getters,
-  avoiding serialization of a container's child list just to inspect its name or attributes.
-* `python/oxml/build.py`: detached `E(name, *children, attrs=None, ns=None)` expressions; children are expressions, parsed `Element` views, strings or omitted `None` values.
-  Parsed children become namespace-complete XML snapshots at construction, unaffected by later source edits or invalidation. IDs remain unchanged and package
-  dependencies are not copied. Caller-provided raw XML bytes are not accepted as children.
-  SDK prefixes resolve automatically; `ns` provides custom/default and value-only prefix bindings. Attributes are raw lexical values, not typed setters.
-  `bytes()` serializes the expression; `append_to(parent, index=None)` attaches it once. Full XML/resource checks run at parsing/attachment.
+  avoiding serialization of a container's child list just to inspect its name or attributes. Calling a live element attaches one detached expression and returns
+  its new typed child. Cached schema-order slots distinguish ordered sequences from unordered/repeatable content groups; automatic insertion preserves existing order.
+* `python/oxml/build.py`: SDK namespace lookup and parsed-element snapshots for fastcore's namespace-aware XML builder. `E(prefix='', attr_ns=None, ns=None)` configures a factory; `e = E('w', attr_ns='w')` is the WordprocessingML preset. `e.tag(*children, **attrs)` returns a detached `XML` expression. Children accept expressions, parsed `Element` views, strings, ordered collections and omitted `None` values. Parsed children become namespace-complete snapshots at construction, unaffected by later source edits or invalidation. IDs remain unchanged and package dependencies are not copied. Caller-provided raw XML bytes are not accepted as children.
+  Factories resolve names at construction and each expression keeps its own bindings. `ns` supplies custom/default and value-only prefix bindings. Keyword attributes use `attr_ns`; `prefix__name` selects an explicit prefix and `attrs_` accepts literal names. Python keywords use a trailing underscore, including `e.del_()`. Attribute values are lexical, not typed setters; booleans serialize as `true`/`false` and `None` is omitted. Name, namespace and character checks run at construction. `bytes()` serializes without formatting whitespace; `parent(expression)` runs the native XML/resource checks and attaches the subtree once. The generic fastcore builder remains schema-free.
 * `python/oxml/document.py`: `Document`, `Package` and `Part`; one cached mutable tree per canonical part name, automatic flush at save and invalidation
   after part replacement/removal. Equivalent case spellings resolve to the same state. A per-call relationship walk serves separate story enumeration and
   reachable-part validation, resolving already-read targets without reparsing relationships per ID. Imported part declarations drive package constraints/root checks.
@@ -58,6 +56,9 @@ whose `children` contains all child node IDs, including text/comments/PIs. `Elem
 `set_attribute`/`remove_attribute`, `rename`, `declare_namespace`, insertion, `delete`, `replace_node`,
 `copy` and `move_node` operate on that state. Element-level Python structural methods use child-content indexes, counting text/comments/PIs as well as elements.
 Copies allocate new IDs. Deletion/replacement invalidates subtree IDs; moving preserves them. A contextual typed view rejects access after its type changes.
+`parent(expression)` places a new child after others in its schema slot and before later slots. It refuses unknown/wildcard/ambiguous placement and existing
+unknown or out-of-order children before mutation; it never repairs order or enforces full content/cardinality/version validity. `parent(expression, index=n)`
+bypasses automatic placement and uses the exact raw child-node index, including text/comments/PIs. This is also the route for untyped XML and deliberate invalid fixtures.
 `Element.qname` returns the expanded `(namespace_uri, local_name)` pair; it and `Element.attribute` read scalar native values rather than full node snapshots.
 `copy_to(parent, index=None)` can import XML across trees through namespace-complete subtree export, including an explicit empty default namespace when needed.
 It does not transfer package dependencies or remap relationship/document-wide IDs. Cross-tree movement remains unsupported.
@@ -167,7 +168,7 @@ The initially expected failures now pass. Future unsupported cases must retain t
 checks. These are structural/preservation tests; they do not launch Word or claim application interoperability.
 
 `tests/fixtures/` contains unchanged original DOCX files and upstream notices. Generic package no-op tests cover every original recursively, including ZIPs
-with directory entries, which are not parts.
+with directory entries, which are not parts. `tests/fixtures/README.md` maps files to their upstream sources and shared notices; keep it current when borrowing fixtures.
 The 16 tests in `test_corpus_body.py`, `test_corpus_reviews.py` and `test_corpus_crosspart.py` independently mutate expected minidom trees and compare expanded
 names, attributes, effective namespace bindings and ordered content; every untouched payload must remain byte-identical. Derivatives live only in test memory
 and temporary output files. These tests establish preservation of stored review structures, not review operations, schema validity, rendering or Word behavior.

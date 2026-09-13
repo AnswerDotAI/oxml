@@ -2,7 +2,7 @@
 from pathlib import Path
 from collections import Counter
 import pytest
-from oxml import Document, E
+from oxml import Document, e
 
 FIXTURES = Path(__file__).parent/'fixtures'
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -43,13 +43,13 @@ def test_shared_relocated_footer_is_one_story_and_validated_once():
     footers = [s for s in doc.stories() if s.element.raw['qname'][1] == 'ftr']
     assert len(footers) == 1 and footers[0].part_uri == part.uri
     assert not [i for i in doc.validate()['issues'] if i['part_uri'] == part.uri]
-    E('w:body').append_to(part.xml.root)  # Invalid footer child; it must not hide behind valid main XML.
+    part.xml.root(e.body(), index=part.xml.xml.child_count(part.xml.root.node_id))  # Deliberately invalid footer child.
     before = doc.bytes()
     report = doc.validate()
     assert report['scope']['part_uris'].count(part.uri) == 1
     assert [(i['rule_id'], i['node']) for i in report['issues'] if i['part_uri'] == part.uri] == [('child-particle', part.xml.root.node_id)]
     assert doc.bytes() == before
-    part.replace(E('w:document', E('w:body')).bytes())  # Valid XML vocabulary, but the wrong root for a footer part.
+    part.replace(e.document(e.body()).bytes())  # Valid XML vocabulary, but the wrong root for a footer part.
     assert any(i['rule_id'] == 'part-root' and i['part_uri'] == part.uri for i in doc.validate()['issues'])
 
 def test_malformed_secondary_xml_is_reported_while_other_parts_are_validated():

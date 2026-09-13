@@ -46,8 +46,8 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}
           path: dist
-      - run: 'pip install --no-index --find-links dist --only-binary=:all: oxml'
-      - run: pip install pytest
+      - run: 'pip install --no-index --find-links dist --only-binary=:all: --no-deps oxml'
+      - run: pip install pytest oxml
       - run: pytest -q
 
   sdist:

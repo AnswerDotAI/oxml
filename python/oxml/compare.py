@@ -5,7 +5,7 @@ dependencies are refused, while untouched content and original metadata remain.
 """
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
-from .build import E
+from .build import e
 from .document import Document
 from .model import Tree, _walk, metadata
 from .paragraphs import _property
@@ -97,7 +97,7 @@ def _fragments(runs, text, start, end):
 
 def _inserted_runs(revision, expressions):
     for run in revision.element.children: run.delete()
-    for expression in expressions: expression.append_to(revision.element)
+    for expression in expressions: revision.element(expression)
 
 def _paragraph_diff(revisions, original, revised, author, date):
     if _key(original, bookkeeping=True) == _key(revised, bookkeeping=True): return
@@ -128,10 +128,10 @@ def _paragraph_diff(revisions, original, revised, author, date):
             _inserted_runs(revision, _fragments(new_runs, after, c, d))
     for start, end, replacement in reversed(formatting):
         _, selected, _, _ = story.range(start, end)._isolate()
-        for run in selected: revisions.format(run, _property(replacement, 'rPr') or E('w:rPr'), author=author, date=date)
+        for run in selected: revisions.format(run, _property(replacement, 'rPr') or e.rPr(), author=author, date=date)
     if _props(original, 'pPr', ('rPr', 'sectPr')) != _props(revised, 'pPr', ('rPr', 'sectPr')):
         properties = _property(revised, 'pPr')
-        expression = E('w:pPr') if properties is None else Tree(properties._tree.xml.subtree_bytes(properties.node_id)).root
+        expression = e.pPr() if properties is None else Tree(properties._tree.xml.subtree_bytes(properties.node_id)).root
         if properties is not None:
             for child in expression.children:
                 if _name(child) in {'rPr', 'sectPr'}: child.delete()

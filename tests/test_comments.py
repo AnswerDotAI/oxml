@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, Story, Comments
+from oxml import Document, E, e, Story, Comments
 from corpus_helpers import parts
+
+e16cex = E('w16cex', attr_ns='w16cex')
 
 FIXTURES = Path(__file__).parent/'fixtures/reviews/libreoffice'
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
@@ -16,8 +18,8 @@ DATE = datetime(2026, 9, 13, 2, 3, 4, tzinfo=timezone.utc)
 
 def plain():
     doc = Document.new()
-    p = E('w:p', E('w:r', E('w:t', 'alpha ', attrs={'xml:space': 'preserve'})),
-          E('w:r', E('w:rPr', E('w:b')), E('w:t', 'beta'))).append_to(doc.main.xml.root.children[0])
+    p = doc.main.xml.root.children[0](e.p(e.r(e.t('alpha ', xml__space='preserve')),
+                                        e.r(e.rPr(e.b()), e.t('beta'))))
     return doc, Story(p)
 
 def test_classic_comment_creation_anchors_formatting_and_package_ownership(tmp_path):
@@ -86,7 +88,8 @@ def test_existing_reply_thread_uses_last_para_ids_and_discovered_parts():
 def test_modern_resolve_reply_and_utc_metadata_preserve_other_records():
     doc = Document.open(FIXTURES/'CommentDone.docx')
     extensible = doc.package.part('/word/commentsExtensible.xml').xml.root
-    E('w16cex:extLst', E('keep:payload', 'opaque', ns={'keep': 'urn:keep'})).append_to(extensible)
+    keep = E('keep', ns={'keep': 'urn:keep'})
+    extensible(e16cex.extLst(keep.payload('opaque')))
     comments, before = Comments(doc), parts(doc)
     comments[0].resolve(False)
     assert not comments[0].resolved
@@ -175,11 +178,11 @@ def test_delete_refuses_broken_modern_linkage_before_mutation():
 def test_delete_empty_classic_comment_and_refuse_external_story_anchors():
     doc = Document.open(FIXTURES.parent.parent/'crosspart/footer-contain-hyperlink.docx')
     root = doc.comments._part('comments', True)
-    E('w:comment', attrs={'w:id': '0', 'w:author': 'Jeremy'}).append_to(root)
+    root(e.comment(id='0', author='Jeremy'))
     assert doc.comments[0].delete() == 1 and not list(doc.comments)
-    E('w:comment', attrs={'w:id': '1', 'w:author': 'Jeremy'}).append_to(root)
+    root(e.comment(id='1', author='Jeremy'))
     footer = next(s for s in doc.stories() if s.element.raw['qname'][1] == 'ftr')
-    E('w:commentRangeStart', attrs={'w:id': '1'}).append_to(footer.element.children[0], 0)
+    footer.element.children[0](e.commentRangeStart(id='1'), index=0)
     before = doc.bytes()
     with pytest.raises(NotImplementedError, match='outside the main part'): doc.comments[1].delete()
     assert doc.bytes() == before

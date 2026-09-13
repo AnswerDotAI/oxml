@@ -1,9 +1,9 @@
 """Explicit numbering definitions and instances; counters and labels are rendered by Office."""
 from dataclasses import dataclass
 from ._core import Xml
-from .build import E
-from .model import w, _one
-from .styles import _W, _child, _position, _ensure, _attribute, _value
+from .build import e
+from .model import w, _one, _position
+from .styles import _W, _child, _ensure, _attribute, _value
 
 def _integer(value, name, maximum=2147483647):
     if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
@@ -36,11 +36,10 @@ class Level:
         indent = self.indent if self.indent is not None else 720*(index+1)
         for name, value in [('start', self.start), ('indent', indent), ('hanging', self.hanging)]: _integer(value, name)
         if self.restart is not None: _integer(self.restart, 'restart', index)
-        return E('w:lvl', E('w:start', attrs={'w:val': self.start}), E('w:numFmt', attrs={'w:val': format}),
-                 E('w:lvlRestart', attrs={'w:val': self.restart}) if self.restart is not None else None,
-                 E('w:lvlText', attrs={'w:val': text}), E('w:lvlJc', attrs={'w:val': 'left'}),
-                 E('w:pPr', E('w:tabs', E('w:tab', attrs={'w:val': 'num', 'w:pos': indent})),
-                   E('w:ind', attrs={'w:left': indent, 'w:hanging': self.hanging})), attrs={'w:ilvl': index})
+        return e.lvl(e.start(val=self.start), e.numFmt(val=format),
+                     e.lvlRestart(val=self.restart) if self.restart is not None else None,
+                     e.lvlText(val=text), e.lvlJc(val='left'),
+                     e.pPr(e.tabs(e.tab(val='num', pos=indent)), e.ind(left=indent, hanging=self.hanging)), ilvl=index)
 
 class Numbering:
     """Instances indexed by numId; reuse an instance to continue the same list."""
@@ -70,12 +69,12 @@ class Numbering:
         root = self._root()
         abstract_id = _next_id(root, 'abstractNum', 'abstractNumId') if root is not None else 0
         num_id = _next_id(root, 'num', 'numId', 1) if root is not None else 1
-        abstract = E('w:abstractNum', E('w:multiLevelType', attrs={'w:val': 'singleLevel' if len(levels) == 1 else 'multilevel'}),
-                     *(level._xml(index) for index, level in enumerate(levels)), attrs={'w:abstractNumId': abstract_id})
+        abstract = e.abstractNum(e.multiLevelType(val='singleLevel' if len(levels) == 1 else 'multilevel'),
+                                 *(level._xml(index) for index, level in enumerate(levels)), abstractNumId=abstract_id)
         Xml(abstract.bytes())
         root = self._root(True)
-        abstract.append_to(root, _position(root, 'abstractNum'))
-        element = E('w:num', E('w:abstractNumId', attrs={'w:val': abstract_id}), attrs={'w:numId': num_id}).append_to(root, _position(root, 'num'))
+        root(abstract)
+        element = root(e.num(e.abstractNumId(val=abstract_id), numId=num_id))
         return NumberingInstance(self, element)
 
 class NumberingInstance:
@@ -122,10 +121,10 @@ class NumberingInstance:
         root = self.numbering._root()
         ident = _next_id(root, 'num', 'numId', 1)
         durable = _next_id(root, 'num', 'durableId', 1) if self.element.attribute(_W, 'durableId') is not None else None
-        element = self.element.copy_to(root, _position(root, 'num'))
+        element = self.element.copy_to(root, _position(root, self.element.qname))
         _attribute(element, 'numId', ident)
         if durable is not None: _attribute(element, 'durableId', durable)
         override = _find(element, 'lvlOverride', 'ilvl', level)
-        if override is None: override = E('w:lvlOverride', attrs={'w:ilvl': level}).append_to(element, _position(element, 'lvlOverride'))
+        if override is None: override = element(e.lvlOverride(ilvl=level))
         _value(override, 'startOverride', start)
         return NumberingInstance(self.numbering, element)

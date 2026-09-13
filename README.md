@@ -5,7 +5,7 @@ Rust/Python Office Open XML client. Python is the primary API; no .NET runtime i
 ## Open, edit and save
 
 ```python
-from oxml import Document, E, w
+from oxml import Document, E, e, w
 
 doc = Document.open('draft.docx')
 tree = doc.main.xml
@@ -22,11 +22,15 @@ Typed views and `tree.xml` raw editing use **one mutable XML state**. Ordinary e
 
 ```python
 body = next(tree.elements(w.Body))
-paragraph = E('w:p', E('w:r', E('w:t', 'New paragraph'))).append_to(body)
-paragraph.copy_to(body)
+paragraph = body(e.p(e.r(e.t('New paragraph'))))
+properties = paragraph(e.pPr(e.jc(val='center')))
 ```
 
-`E` builds detached subtrees and attaches them in one operation. It accepts parsed `Element` children alongside nested expressions and text, capturing their XML when the expression is constructed; later source edits do not affect it. These snapshots and cross-tree `copy_to` preserve XML namespace context, but do not copy package dependencies or remap relationship/document IDs.
+`e` is the WordprocessingML factory, configured as `E('w', attr_ns='w')`. Use `e.tcW(type='dxa', w=2400)` for qualified element and attribute names. Explicit attribute prefixes use double underscores: `r__id='rId1'` and `xml__space='preserve'`. `attrs_` accepts literal attribute names without adding a prefix. Other factories can leave attributes unqualified, such as `E('a').blip(r__embed='rId1')`. SDK prefixes resolve automatically; `E(ns=bindings)` supplies custom namespaces. Each expression retains its factory's namespace bindings when nested.
+
+Factories build detached `XML` expressions using fastcore's namespace-aware builder. Expressions accept parsed `Element` children alongside nested expressions, text, ordered collections and omitted `None` values. Parsed children capture their XML at construction; later source edits do not affect them. `.bytes()` serializes an expression.
+
+Calling a live parent attaches one expression and returns its new live child. Placement follows the parent's schema: the paragraph goes before final section properties, and its `pPr` goes before its runs, without reordering existing content. `parent(expression, index=n)` instead selects an exact XML child-node position, counting text/comments/PIs too. Unknown or ambiguous schema order requires an explicit index. Placement is not full schema validation; use `doc.validate()` to check edits. Existing live nodes use explicit `copy_to` or `move_to` operations. Snapshots and cross-tree copies preserve XML namespace context, but do not copy package dependencies or remap relationship/document IDs.
 
 The internal quick-xml editor supports ordered elements, attributes, text, comments and processing instructions; namespace-aware insertion, deletion, replacement, copying and movement; and UTF-8/UTF-16 input. Ordinary edits use preflight checks and in-place mutation, not whole-part cloning or serialization. Serialization is deferred until bytes/save are requested; aggregate output limits can fail then. No-op XML keeps its original bytes; edited XML is serialized as UTF-8, preserving unknown content and namespace meaning rather than original formatting or CDATA boundaries. Mixed-content text replacement is refused.
 
@@ -52,7 +56,7 @@ doc.revisions.replace(doc.story.find('fourteen days'), 'twenty-one days', author
 doc.save('redlined.docx')
 ```
 
-Iterating `doc.revisions` exposes inline insertions/deletions, paragraph-boundary changes and run/paragraph property histories; each supports `accept()`/`reject()`. Bulk `accept_all()`/`reject_all()` preflight the story and refuse unsupported families rather than silently skipping them. `Revisions(story)` handles another explicit story. `doc.revisions.format(run, E('w:rPr', E('w:b')), author='Drafter')` tracks a direct formatting change; `.previous`/`.current` expose its properties.
+Iterating `doc.revisions` exposes inline insertions/deletions, paragraph-boundary changes and run/paragraph property histories; each supports `accept()`/`reject()`. Bulk `accept_all()`/`reject_all()` preflight the story and refuse unsupported families rather than silently skipping them. `Revisions(story)` handles another explicit story. `doc.revisions.format(run, e.rPr(e.b()), author='Drafter')` tracks a direct formatting change; `.previous`/`.current` expose its properties.
 
 Ordinary text beside existing revisions is editable; editing inside/across a revision requires explicit acceptance/rejection first. `\n` replacement supports paragraph splits/joins among adjacent sibling paragraphs, but not section or table-container boundaries. Joins retain the last paragraph's properties. Bookmarks/comment anchors are zero-width and survive text edits: enclosing anchors retain replacement text, and interior anchors collapse to its end. Fields, content controls, moves and opaque payloads remain protected; unsupported text structures appear as U+FFFC. These are stored-text views, not rendering.
 
@@ -92,3 +96,14 @@ redline.save('comparison.docx')
 
 The source policy targets SDK parity using pinned SDK JSON, relevant C# information and small explicit supplements—not an independent standards audit. `scripts/import_sdk.py` regenerates the shared descriptor; ordinary builds and installed packages do not need an SDK checkout. The curated corpus contains 18 original DOCX files, with targeted editing tests for body structures, review metadata and secondary parts. Independent XML comparisons and exact untouched-payload checks provide preservation evidence, not application interoperability claims. See [DEV.md](DEV.md) for implementation boundaries, resource limits and reproducible verification.
 
+## License and acknowledgements
+
+oxml's own code is [Apache-2.0 licensed](LICENSE). Imported material retains its upstream notices and terms.
+
+* **[Open XML SDK](https://github.com/dotnet/Open-XML-SDK)** — Microsoft, the .NET Foundation and contributors. Its schema metadata, validator behavior, implementation ideas and tests are the foundation for our typed model and validation. The [SDK copyright and MIT notice](python/oxml/SDK-LICENSE) ships with the Python package.
+* **[Open XML PowerTools](https://github.com/OpenXmlDev/Open-Xml-PowerTools)** — Microsoft, Eric White and contributors, for revision-processing and document-comparison reference behavior, tests and fixtures.
+* **[Pandoc](https://github.com/jgm/pandoc)** — John MacFarlane, Jesse Rosenthal and contributors, for DOCX fixtures and independent reader/review expectations.
+* **[LibreOffice](https://github.com/LibreOffice/core)** contributors and The Document Foundation, for regression documents and tests covering modern comments and cross-part content.
+* **[python-docx](https://github.com/python-openxml/python-docx)** — Steve Canny and contributors, for the section fixture and API/test examples; **[Apache POI](https://github.com/apache/poi)** — the Apache Software Foundation and contributors, for the header-image fixture and relationship tests.
+
+The [fixture source table](tests/fixtures/README.md) maps borrowed files to their upstream locations and retained licenses. Adapted tests identify their upstream cases in source comments. Thanks also to the developers of our runtime dependencies, especially PyO3 and quick-xml.

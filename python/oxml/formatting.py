@@ -4,7 +4,7 @@ PowerTools RevisionProcessor's property-change transforms retain current propert
 acceptance and restore the embedded snapshot on rejection. Paragraph-mark rPr and sectPr
 are independent of the pPrChange snapshot and must survive paragraph-format rejection.
 """
-from .build import E
+from .build import XML, e
 from .model import Element, Tree, _walk
 from .text import _name, _inside
 from .revisions import _context, _revision_attrs, _revision_name
@@ -64,9 +64,8 @@ def create(story, target, properties, *, author, date=None):
     paragraph = target if _name(target) == 'p' else target.parent
     if paragraph is None or _name(paragraph) != 'p': raise NotImplementedError('Formatting requires an ordinary paragraph')
     _context(paragraph)
-    if isinstance(properties, E): replacement = Tree(properties.bytes()).root
-    elif isinstance(properties, Element): replacement = _copy(properties)
-    else: raise TypeError('Properties require an E expression or parsed Element')
+    if not isinstance(properties, (XML, Element)): raise TypeError('Properties require an XML expression or parsed Element')
+    replacement = Tree(e(_name(target), properties).bytes()).root.children[0]
     if _name(replacement) != expected: raise ValueError(f'Expected w:{expected} properties')
     if expected == 'pPr' and any(_name(c) in _RETAIN for c in replacement.children):
         raise ValueError('Supply paragraph base properties only; paragraph-mark and section properties are retained')
@@ -76,7 +75,7 @@ def create(story, target, properties, *, author, date=None):
     for properties in [replacement, *existing]:
         if any(_revision_name(e) for e in _walk(properties)):
             raise NotImplementedError('Nested or conflicting property revision history is unsupported')
-    previous = _copy(old) if old is not None else Tree(E('w:'+expected).bytes()).root
+    previous = _copy(old) if old is not None else Tree(e(expected).bytes()).root
     if expected == 'pPr':
         for child in previous.children:
             if _name(child) in _RETAIN: child.delete()
@@ -84,7 +83,7 @@ def create(story, target, properties, *, author, date=None):
             for child in old.children:
                 if _name(child) in _RETAIN: child.copy_to(replacement)
     kind = expected+'Change'
-    E('w:'+kind, previous, attrs=next(_revision_attrs(target._tree, author, date))).append_to(replacement)
+    replacement(e(kind, previous, attrs_=next(_revision_attrs(target._tree, author, date))))
     xml = target._tree.xml
     index = xml.children(target.node_id).index(old.node_id) if old is not None else 0
     current = replacement.copy_to(target, index)

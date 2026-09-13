@@ -2,7 +2,7 @@
 from pathlib import Path
 from xml.etree.ElementTree import fromstring
 import pytest
-from oxml import Document, E, Story, Table, w
+from oxml import Document, e, Story, Table, w
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 
@@ -10,8 +10,8 @@ def test_rectangular_table_rows_columns_and_cell_text_roundtrip():
     doc = Document.new()
     body = next(doc.main.xml.elements(w.Body))
     table = Table.add(body, [['A', 'B'], ['C', 'D']], [2000, 3000])
-    properties = E('w:tcPr', E('w:shd', attrs={'w:fill': 'CCCCCC'})).append_to(table.cells(0)[0], 0)
-    E('w:pPr', E('w:jc', attrs={'w:val': 'right'})).append_to(table.cells(0)[0].children[1], 0)
+    properties = table.cells(0)[0](e.tcPr(e.shd(fill='CCCCCC')))
+    table.cells(0)[0].children[1](e.pPr(e.jc(val='right')))
     w14 = 'http://schemas.microsoft.com/office/word/2010/wordml'
     table.element._tree.xml.set_attribute(table.rows[1].node_id, w14, 'paraId', '12345678', 'w14')
     inserted = table.insert_row(1, ['E', 'F'])
@@ -31,7 +31,7 @@ def test_rectangular_table_rows_columns_and_cell_text_roundtrip():
     cell = table.cells(1)[1]
     nested = Table.add(cell, [['inner']], [1000])
     assert cell.children[-1].raw['qname'][1] == 'p' and Story(nested.cells(0)[0]).text == 'inner'
-    E('w:bookmarkStart', attrs={'w:id': '7', 'w:name': 'keep'}).append_to(cell.children[-1], 0)
+    cell.children[-1](e.bookmarkStart(id='7', name='keep'), index=0)
     original = doc.bytes()
     with pytest.raises(NotImplementedError, match='bookmarks/comments'): table.delete_column(1)
     assert doc.bytes() == original

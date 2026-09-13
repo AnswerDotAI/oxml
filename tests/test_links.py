@@ -3,7 +3,7 @@ from pathlib import Path
 from xml.etree.ElementTree import fromstring, tostring
 from zipfile import ZipFile
 import pytest
-from oxml import Document, E, Story, w
+from oxml import Document, e, Story, w
 from oxml.links import Bookmarks, Hyperlinks
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -13,10 +13,10 @@ FIXTURE = Path(__file__).parent/'fixtures/crosspart/footer-contain-hyperlink.doc
 @pytest.mark.parametrize('owner,properties,revision', [('tr', 'trPr', 'del'), ('tc', 'tcPr', 'cellDel')])
 def test_edits_in_revised_rows_and_cells_are_refused(owner, properties, revision):
     doc = Document.new()
-    E('w:tbl', E('w:tr', E('w:tc', E('w:p', E('w:r', E('w:t', 'plain ')),
-      E('w:hyperlink', E('w:r', E('w:t', 'link')), attrs={'w:anchor': 'target'}))))).append_to(doc.story.element.children[0])
+    doc.story.element.children[0](e.tbl(e.tr(e.tc(e.p(e.r(e.t('plain ')),
+      e.hyperlink(e.r(e.t('link')), anchor='target'))))))
     target = next(e for e in doc.main.xml.elements() if e.qname == (W, owner))
-    E('w:'+properties, E('w:'+revision, attrs={'w:id': '1', 'w:author': 'Reviewer'})).append_to(target, 0)
+    target(e(properties, e(revision, id='1', author='Reviewer')))
     link, = doc.hyperlinks
     before = doc.bytes()
     for edit in (lambda: doc.story.find('plain').replace('changed'), lambda: doc.hyperlinks.add(doc.story.find('plain'), '#target'), link.remove):
@@ -32,7 +32,8 @@ def test_existing_footer_target_reuse_and_scoped_cleanup_preserve_runs(tmp_path)
     assert link.target == 'http://www.google.com/' and link.text == story.text == 'www.google.com'
     original_run = fromstring(footer.bytes()).find(f'.//{{{W}}}hyperlink/{{{W}}}r')
     assert doc.bytes() == FIXTURE.read_bytes()
-    E('w:r', E('w:t', ' second')).append_to(next(footer.elements(w.Paragraph)))
+    paragraph = next(footer.elements(w.Paragraph))
+    paragraph(e.r(e.t(' second')), index=footer.xml.child_count(paragraph.node_id))
     other = links.add(story.find('second'), link.target)
     assert len(doc.package.relationships('/word/footer1.xml')) == 1
     assert other.element.attribute(R, 'id') == link.element.attribute(R, 'id') == 'rId1'
@@ -55,8 +56,8 @@ def test_existing_footer_target_reuse_and_scoped_cleanup_preserve_runs(tmp_path)
 
 def test_bookmark_anchor_ref_and_hyperlink_removal_preserve_formatted_text():
     doc = Document.new()
-    E('w:p', E('w:r', E('w:rPr', E('w:b')), E('w:t', 'alpha be')),
-      E('w:r', E('w:rPr', E('w:i')), E('w:t', 'ta gamma'))).append_to(next(doc.main.xml.elements(w.Body)))
+    next(doc.main.xml.elements(w.Body))(e.p(e.r(e.rPr(e.b()), e.t('alpha be')),
+                                          e.r(e.rPr(e.i()), e.t('ta gamma'))))
     bookmark = doc.bookmarks.add(doc.story.find('beta'), 'clause')
     for marker in (bookmark.element, next(doc.main.xml.elements(w.BookmarkEnd))): marker.set_attribute(W, 'id', f'{bookmark.id:03}')
     assert bookmark.range.text == doc.bookmarks['clause'].range.text == 'beta'
@@ -82,7 +83,7 @@ def test_bookmark_anchor_ref_and_hyperlink_removal_preserve_formatted_text():
 
 def test_foreign_ranges_and_claimed_owners_cannot_change_relationships():
     docs = [Document.new(), Document.new()]
-    for doc in docs: E('w:p', E('w:r', E('w:t', 'text'))).append_to(next(doc.main.xml.elements(w.Body)))
+    for doc in docs: next(doc.main.xml.elements(w.Body))(e.p(e.r(e.t('text'))))
     doc, foreign = docs
     before = [d.bytes() for d in docs]
     with pytest.raises(ValueError): doc.hyperlinks.add(foreign.story.find('text'), 'https://example.com/')
@@ -98,10 +99,10 @@ def test_foreign_ranges_and_claimed_owners_cannot_change_relationships():
 
 def test_linking_preserves_interior_bookmark_and_comment_ranges_and_reference_position():
     doc = Document.new()
-    E('w:p', E('w:r', E('w:t', 'a')), E('w:bookmarkStart', attrs={'w:id': '1', 'w:name': 'inside'}),
-      E('w:commentRangeStart', attrs={'w:id': '7'}), E('w:r', E('w:t', 'b'), E('w:commentReference', attrs={'w:id': '7'}), E('w:t', 'c')),
-      E('w:commentRangeEnd', attrs={'w:id': '7'}), E('w:bookmarkEnd', attrs={'w:id': '1'}), E('w:r', E('w:t', 'd'))).append_to(
-          next(doc.main.xml.elements(w.Body)))
+    paragraph = e.p(e.r(e.t('a')), e.bookmarkStart(id='1', name='inside'),
+        e.commentRangeStart(id='7'), e.r(e.t('b'), e.commentReference(id='7'), e.t('c')),
+        e.commentRangeEnd(id='7'), e.bookmarkEnd(id='1'), e.r(e.t('d')))
+    next(doc.main.xml.elements(w.Body))(paragraph)
     link = doc.hyperlinks.add(doc.story.find('abcd'), 'https://example.com/')
     assert link.text == 'abcd' and doc.bookmarks['inside'].range.text == 'bc'
     start, end = next(doc.main.xml.elements(w.CommentRangeStart)), next(doc.main.xml.elements(w.CommentRangeEnd))

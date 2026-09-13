@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, Tree, w, Story, Revisions
+from oxml import Document, e, Tree, w, Story, Revisions
 from corpus_helpers import parts
 
 FIXTURES = Path(__file__).parent/'fixtures'
@@ -60,10 +60,11 @@ def test_existing_pandoc_revision_endpoints(accept, word, tmp_path):
 @pytest.mark.parametrize('accept', [True, False])
 def test_tracked_replacement_across_formatted_runs(accept):
     doc = Document.new()
-    paragraph = E('w:p', E('w:bookmarkStart', attrs={'w:id': '0', 'w:name': 'retained'}),
-        E('w:r', E('w:rPr', E('w:b')), E('w:t', 'alpha be')),
-        E('w:r', E('w:rPr', E('w:i')), E('w:t', 'ta gamma')),
-        E('w:bookmarkEnd', attrs={'w:id': '0'})).append_to(next(doc.main.xml.elements(w.Body)))
+    body = next(doc.main.xml.elements(w.Body))
+    paragraph = body(e.p(e.bookmarkStart(id='0', name='retained'),
+        e.r(e.rPr(e.b()), e.t('alpha be')),
+        e.r(e.rPr(e.i()), e.t('ta gamma')),
+        e.bookmarkEnd(id='0')))
     story = Story(paragraph)
     revisions = Revisions(story)
     deletion, insertion = revisions.replace(story.find('beta'), 'B\tC\vD', author='Jeremy', date=DATE)
@@ -83,7 +84,7 @@ def test_tracked_replacement_across_formatted_runs(accept):
 @pytest.mark.parametrize('start,end,text,kind,accepted', [(1, 1, 'X', 'ins', 'aXbc'), (1, 2, '', 'del', 'ac')])
 def test_insertion_and_deletion(start, end, text, kind, accepted):
     for accept in (False, True):
-        tree = Tree(E('w:p', E('w:r', E('w:t', 'abc'))).bytes())
+        tree = Tree(e.p(e.r(e.t('abc'))).bytes())
         story = Story(tree.root)
         revision, = Revisions(story).replace(story.range(start, end), text, author='Reviewer', date=DATE)
         assert revision.kind == kind
@@ -110,22 +111,22 @@ def test_existing_pandoc_paragraph_boundaries(accept, expected):
     assert {k: v for k, v in after.items() if k != 'word/document.xml'} == {k: v for k, v in before.items() if k != 'word/document.xml'}
 
 def test_bulk_preflight_and_invalid_new_metadata():
-    good = E('w:ins', E('w:r', E('w:t', 'keep')), attrs={'w:id': '1', 'w:author': 'Reviewer'})
-    nested = E('w:del', good, attrs={'w:id': '2', 'w:author': 'Reviewer'})
-    tree = Tree(E('w:body', E('w:p', good), E('w:p', nested)).bytes())
+    good = e.ins(e.r(e.t('keep')), id='1', author='Reviewer')
+    nested = e.del_(good, id='2', author='Reviewer')
+    tree = Tree(e.body(e.p(good), e.p(nested)).bytes())
     original = tree.bytes()
     for operation in (Revisions(Story(tree.root)).accept_all, Revisions(Story(tree.root)).reject_all):
         with pytest.raises(NotImplementedError): operation()
         assert tree.bytes() == original
-    ordinary = Tree(E('w:p', E('w:r', E('w:t', 'abc'))).bytes())
+    ordinary = Tree(e.p(e.r(e.t('abc'))).bytes())
     story, original = Story(ordinary.root), ordinary.bytes()
     with pytest.raises(ValueError): Revisions(story).replace(story.find('b'), 'x', author='bad\x00author', date=DATE)
     assert ordinary.bytes() == original
 
 def test_creation_inside_revision_marked_cell_is_refused():
     # PowerTools RP034/RP035 use cellDel/cellIns in tcPr: editing text must not silently treat that cell as ordinary.
-    tree = Tree(E('w:tbl', E('w:tr', E('w:tc', E('w:tcPr', E('w:cellDel', attrs={'w:id': '0', 'w:author': 'Reviewer'})),
-        E('w:p', E('w:r', E('w:t', 'abc')))))).bytes())
+    tree = Tree(e.tbl(e.tr(e.tc(e.tcPr(e.cellDel(id='0', author='Reviewer')),
+        e.p(e.r(e.t('abc')))))).bytes())
     story, original = Story(next(tree.elements(w.Paragraph))), tree.bytes()
     with pytest.raises(NotImplementedError): Revisions(story).replace(story.find('b'), 'x', author='Reviewer', date=DATE)
     assert tree.bytes() == original

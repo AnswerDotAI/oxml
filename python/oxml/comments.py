@@ -5,9 +5,13 @@ stay untouched; rendering, mentions and application-specific identities are not 
 """
 from datetime import datetime, timezone
 from ._core import Xml
-from .build import E
+from .build import E, e
 from .model import metadata, _walk, _one, _choose_prefix
 from .text import Story, _run_text
+
+e15 = E('w15', attr_ns='w15')
+e16cid = E('w16cid', attr_ns='w16cid')
+e16cex = E('w16cex', attr_ns='w16cex')
 
 _NS = metadata['namespaces']
 _W, _W14, _W15, _CID, _CEX, _MC = (_NS[p] for p in ('w', 'w14', 'w15', 'w16cid', 'w16cex', 'mc'))
@@ -48,13 +52,6 @@ def _para_id(element, value):
     prefix = _attribute(element, 'w14', 'paraId', value)
     ignorable = (element.attribute(_MC, 'Ignorable') or '').split()
     if prefix not in ignorable: _attribute(element, 'mc', 'Ignorable', ' '.join([*ignorable, prefix]))
-
-def _append(root, expression):
-    # commentsExtensible permits one trailing extLst; keep opaque extension payloads last.
-    xml = root._tree.xml
-    index = next((xml.children(root.node_id).index(e.node_id) for e in root.children if e.qname[1] == 'extLst'),
-                 xml.child_count(root.node_id))
-    return expression.append_to(root, index)
 
 class Comments:
     """Live comments, indexed by w:id (not collection position)."""
@@ -114,10 +111,11 @@ class Comments:
         modern = parent is not None or any(roots[k] is not None for k in ('extended', 'ids', 'extensible'))
         para_id = _next(values, True) if modern else None
         lines = text.split('\n')
-        paragraphs = [E('w:p', E('w:r', E('w:annotationRef')) if i == 0 else None, _run_text(None, line),
-                        attrs={'w14:paraId': para_id, 'mc:Ignorable': 'w14'} if para_id is not None and i == len(lines)-1 else {})
+        paragraphs = [e.p(e.r(e.annotationRef()) if i == 0 else None, _run_text(None, line),
+                          w14__paraId=para_id if i == len(lines)-1 else None,
+                          mc__Ignorable='w14' if para_id is not None and i == len(lines)-1 else None)
                       for i, line in enumerate(lines)]
-        body = E('w:comment', *paragraphs, attrs={'w:id': ident, 'w:author': author, 'w:initials': initials, 'w:date': stamp})
+        body = e.comment(paragraphs, id=ident, author=author, initials=initials, date=stamp)
         Xml(body.bytes())  # Validate caller text/metadata before changing parts or anchors.
         durable = None
         if roots['ids'] is not None:
@@ -125,16 +123,14 @@ class Comments:
                              for uri, local, value in e.raw['attributes'] if uri in {_CID, _CEX} and local == 'durableId'], True)
         if parent_para is not None and parent_para.attribute(_W14, 'paraId') is None: _para_id(parent_para, parent_id)
         root = roots['comments'] if roots['comments'] is not None else self._part('comments', True)
-        element = _append(root, body)
+        element = root(body)
         if parent is not None or roots['extended'] is not None:
             extended = roots['extended'] if roots['extended'] is not None else self._part('extended', True)
-            attrs = {'w15:paraId': para_id}
-            if parent_id is not None: attrs['w15:paraIdParent'] = parent_id
-            _append(extended, E('w15:commentEx', attrs=attrs))
+            extended(e15.commentEx(paraId=para_id, paraIdParent=parent_id))
         if durable is not None:
-            _append(roots['ids'], E('w16cid:commentId', attrs={'w16cid:paraId': para_id, 'w16cid:durableId': durable}))
+            roots['ids'](e16cid.commentId(paraId=para_id, durableId=durable))
             if roots['extensible'] is not None:
-                _append(roots['extensible'], E('w16cex:commentExtensible', attrs={'w16cex:durableId': durable, 'w16cex:dateUtc': stamp}))
+                roots['extensible'](e16cex.commentExtensible(durableId=durable, dateUtc=stamp))
         return Comment(self, element)
 
     def add(self, range, text, author, *, initials='', date=None):
@@ -143,11 +139,11 @@ class Comments:
         if range.story.element._tree is not self.doc.main.xml: raise ValueError('Comment range must belong to this document main story')
         comment = self._create(text, author, initials, date)
         paragraph, runs, index, _ = range._isolate()
-        E('w:commentRangeStart', attrs={'w:id': comment.id}).append_to(paragraph, index)
+        paragraph(e.commentRangeStart(id=comment.id), index=index)
         xml = paragraph._tree.xml
         end = xml.children(paragraph.node_id).index(runs[-1].node_id)+1 if runs else index+1
-        E('w:commentRangeEnd', attrs={'w:id': comment.id}).append_to(paragraph, end)
-        E('w:r', E('w:commentReference', attrs={'w:id': comment.id})).append_to(paragraph, end+1)
+        paragraph(e.commentRangeEnd(id=comment.id), index=end)
+        paragraph(e.r(e.commentReference(id=comment.id)), index=end+1)
         return comment
 
 class Comment:
@@ -215,7 +211,7 @@ class Comment:
                 ident = _next([v for root in roots if root is not None for e in _walk(root)
                                for ns, name, v in e.raw['attributes'] if ns in {_W14, _W15, _CID} and name in {'paraId', 'paraIdParent'}], True)
                 _para_id(paragraph, ident)
-            record = _append(self.comments._part('extended', True), E('w15:commentEx', attrs={'w15:paraId': ident}))
+            record = self.comments._part('extended', True)(e15.commentEx(paraId=ident))
         _attribute(record, 'w15', 'done', '1' if value else '0')
         return self
 
@@ -224,10 +220,10 @@ class Comment:
         start, end = self.comments._anchors(self.id)
         reply = self.comments._create(text, author, initials, date, self)
         index = start._tree.xml.children(start.parent.node_id).index(start.node_id)+1
-        E('w:commentRangeStart', attrs={'w:id': reply.id}).append_to(start.parent, index)
+        start.parent(e.commentRangeStart(id=reply.id), index=index)
         index = end._tree.xml.children(end.parent.node_id).index(end.node_id)
-        E('w:commentRangeEnd', attrs={'w:id': reply.id}).append_to(end.parent, index)
-        E('w:r', E('w:commentReference', attrs={'w:id': reply.id})).append_to(end.parent, index+1)
+        end.parent(e.commentRangeEnd(id=reply.id), index=index)
+        end.parent(e.r(e.commentReference(id=reply.id)), index=index+1)
         return reply
 
     def delete(self):

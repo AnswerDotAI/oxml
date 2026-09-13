@@ -4,8 +4,8 @@ Destination theme and document defaults remain in effect. This copies explicit
 definitions and XML, not a rendered formatting cascade or an entire package.
 """
 from posixpath import basename, dirname, splitext
-from .model import Element, Tree, metadata, _walk, _choose_prefix
-from .styles import _W, _child, _position, _attribute
+from .model import Element, Tree, metadata, _walk, _choose_prefix, _position
+from .styles import _W, _child, _attribute
 from .numbering import _find
 from .revisions import _context, _revision_name
 
@@ -220,7 +220,7 @@ class _Import:
             if kind == 'content':
                 result.append(tree.root.copy_to(parent, index))
                 index += 1
-            else: tree.root.copy_to(parent, _position(parent, tree.root.qname[1]))
+            else: tree.root.copy_to(parent, _position(parent, tree.root.qname))
         return result
 
 def import_content(source, elements, destination, parent, index=None):

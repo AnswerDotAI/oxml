@@ -2,7 +2,7 @@
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, w, import_content
+from oxml import Document, E, e, w, import_content
 from corpus_helpers import parts
 
 FIXTURES = Path(__file__).parent/'fixtures'
@@ -54,14 +54,13 @@ def test_numbering_dependency_cycles_and_instance_dedup_keep_real_restart_overri
     selected = next(p for p in source.main.xml.elements(w.Paragraph)
                     if any(e.get(W+'val') == '2' for e in xml(p).iter(W+'numId')))
     duplicate = selected.copy_to(body(source), 0)
-    for e in duplicate.children:
-        if e.raw['qname'][1] in {'bookmarkStart', 'bookmarkEnd'}: e.delete()
+    for child in duplicate.children:
+        if child.raw['qname'][1] in {'bookmarkStart', 'bookmarkEnd'}: child.delete()
     instance = source.numbering[2]
     # A numbering-style dependency cycle must import once, not recurse forever or lose its reference.
     root = source._part('StyleDefinitionsPart').xml.root
-    E('w:style', E('w:name', attrs={'w:val': 'ListLink'}), E('w:pPr', E('w:numPr', E('w:numId', attrs={'w:val': '2'}))),
-      attrs={'w:type': 'numbering', 'w:styleId': 'ListLink'}).append_to(root)
-    E('w:styleLink', attrs={'w:val': 'ListLink'}).append_to(instance.definition, 0)
+    root(e.style(e.name(val='ListLink'), e.pPr(e.numPr(e.numId(val='2'))), type='numbering', styleId='ListLink'))
+    instance.definition(e.styleLink(val='ListLink'))
     before_source, before = source.bytes(), ET.fromstring(destination._part('NumberingDefinitionsPart').read_bytes())
     copied = import_content(source, [selected, duplicate], destination, body(destination))
     assert source.bytes() == before_source
@@ -115,15 +114,15 @@ def test_header_images_and_footer_hyperlinks_resolve_in_their_actual_part_scopes
 
 def test_bookmark_and_paragraph_ids_are_remapped_and_unsupported_import_is_read_only():
     source, destination = Document.new(), Document.new()
-    expression = E('w:p', E('w:bookmarkStart', attrs={'w:id': '1', 'w:name': 'Clause'}), E('w:r', E('w:t', 'Clause')),
-                   E('w:bookmarkEnd', attrs={'w:id': '1'}), E('w:hyperlink', E('w:r', E('w:t', 'See clause')),
-                     attrs={'w:anchor': 'Clause'}), E('keep:opaque', attrs={'keep:data': 'kept'}, ns={'keep': 'urn:keep'}),
-                   attrs={'w14:paraId': '00000001'})
-    original = expression.append_to(body(source))
+    keep = E('keep', attr_ns='keep', ns={'keep': 'urn:keep'})
+    expression = e.p(e.bookmarkStart(id='1', name='Clause'), e.r(e.t('Clause')),
+                     e.bookmarkEnd(id='1'), e.hyperlink(e.r(e.t('See clause')), anchor='Clause'),
+                     keep.opaque(data='kept'), w14__paraId='00000001')
+    original = body(source)(expression)
     source.main.xml.xml.declare_namespace(source.main.xml.root.node_id, 'old', 'urn:ancestor')
     source.main.xml.xml.set_attribute(source.main.xml.root.node_id, MC[1:-1], 'Ignorable', 'old', 'mc')
     original._tree.xml.declare_namespace(original.node_id, 'old', 'urn:shadow')
-    expression.append_to(body(destination))
+    body(destination)(expression)
     copied, = import_content(source, original, destination, body(destination))
     actual = xml(copied)
     assert actual.get(W14+'paraId') != '00000001'
@@ -148,10 +147,10 @@ def test_bookmark_and_paragraph_ids_are_remapped_and_unsupported_import_is_read_
     revised_table = Document.open(FIXTURES/'body/table_header_rowspan.docx')
     cell = next(revised_table.main.xml.elements(w.TableCell))
     cell_paragraph = next(e for e in cell.children if e.qname == (W[1:-1], 'p'))
-    plain = E('w:p', E('w:r', E('w:t', 'Imported'))).append_to(body(source))
+    plain = body(source)(e.p(e.r(e.t('Imported'))))
     import_content(source, plain, revised_table, cell)  # Ordinary table nesting remains supported.
     props = next(e for e in cell.children if e.qname == (W[1:-1], 'tcPr'))
-    E('w:cellDel', attrs={'w:id': '1', 'w:author': 'Reviewer'}).append_to(props)
+    props(e.cellDel(id='1', author='Reviewer'))
     table_before = revised_table.bytes()
     with pytest.raises(NotImplementedError, match='revision context'):
         import_content(revised_table, cell_paragraph, destination, body(destination))

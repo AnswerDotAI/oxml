@@ -43,7 +43,7 @@ def _split_at(paragraph, index, shell=None):
     properties = _property(paragraph, 'pPr')
     prefix = [i for i in xml.children(paragraph.node_id)[:index] if properties is None or i != properties.node_id]
     location = xml.children(parent.node_id).index(paragraph.node_id)
-    left = (_shell(paragraph, properties) if shell is None else shell).append_to(parent, location)
+    left = parent(_shell(paragraph, properties) if shell is None else shell, index=location)
     for local in ('paraId', 'textId'): left.remove_attribute(metadata['namespaces']['w14'], local)
     for mark in _marks(left): mark.delete()
     for identity in prefix: xml.move_node(identity, left.node_id, xml.child_count(left.node_id))
@@ -130,7 +130,7 @@ def _replace_range(span, text):
     index = _content_start(paragraph)+prefix_length
     for i, expression in enumerate(expressions):
         if expression is not None:
-            expression.append_to(paragraph, index)
+            paragraph(expression, index=index)
             index += 1
         if i < len(expressions)-1:
             _, paragraph = _split_at(paragraph, index, left_shell)

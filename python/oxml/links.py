@@ -1,6 +1,6 @@
 """Bookmarks and hyperlink wrappers over live stories, without field evaluation."""
 from ._core import Xml
-from .build import E
+from .build import E, e
 from .model import metadata, _walk, _one
 from .text import Story, Range, _name, _paragraph, _run_text, _inside
 
@@ -46,14 +46,14 @@ class Bookmarks:
         if any(e.attribute(_W, 'name') == name for e in markers): raise ValueError('Bookmark name already exists')
         used = {int(e.attribute(_W, 'id')) for e in markers}
         ident = str(next(i for i in range(len(used)+1) if i not in used))
-        start = E('w:bookmarkStart', attrs={'w:id': ident, 'w:name': name})
-        end = E('w:bookmarkEnd', attrs={'w:id': ident})
-        Xml(E('markers', start, end).bytes())
+        start = e.bookmarkStart(id=ident, name=name)
+        end = e.bookmarkEnd(id=ident)
+        Xml(E().markers(start, end).bytes())
         paragraph, runs, index, _ = span._isolate()
         xml = paragraph._tree.xml
         stop = xml.children(paragraph.node_id).index(runs[-1].node_id)+1 if runs else index
-        end.append_to(paragraph, stop)
-        return Bookmark(self, start.append_to(paragraph, index))
+        paragraph(end, index=stop)
+        return Bookmark(self, paragraph(start, index=index))
 
 class Bookmark:
     def __init__(self, bookmarks, element): self.bookmarks, self.element = bookmarks, element
@@ -87,8 +87,7 @@ class Bookmark:
     def ref(self, text=None):
         """Detached REF field with a cached result; no field evaluation or recalculation."""
         if not self.name.isidentifier(): raise ValueError('REF construction requires a simple identifier bookmark name')
-        return E('w:fldSimple', _run_text(None, self.range.text if text is None else text),
-                 attrs={'w:instr': f' REF {self.name} ', 'w:dirty': 'true'})
+        return e.fldSimple(_run_text(None, self.range.text if text is None else text), instr=f' REF {self.name} ', dirty=True)
 
 class Hyperlinks:
     """Hyperlinks in one story, with relationships scoped to its verified owning XML part."""
@@ -113,20 +112,20 @@ class Hyperlinks:
         if span.start == span.end: raise ValueError('A hyperlink requires a nonempty text range')
         uri = self._owner()
         if not isinstance(target, str) or not target: raise ValueError('Hyperlink target requires a nonempty string')
-        Xml(E('target', attrs={'value': target}).bytes())
+        Xml(E().target(value=target).bytes())
         if target.startswith('#'):
             _name_value(target[1:])
-            attrs = {'w:anchor': target[1:]}
+            expression = e.hyperlink(anchor=target[1:])
         else:
             relationship = next((r for r in self.package.relationships(uri)
                                  if r['type'] in {_HYPERLINK, _STRICT_HYPERLINK} and r['target_mode'] == 'External' and r['target'] == target), None)
             ident = relationship['id'] if relationship else self.package.add_relationship(uri, _HYPERLINK, target, 'External')
-            attrs = {'r:id': ident}
+            expression = e.hyperlink(r__id=ident)
         paragraph, runs, index, _ = span._isolate()
         xml = paragraph._tree.xml
         content = xml.children(paragraph.node_id)
         selected = content[index:content.index(runs[-1].node_id)+1]
-        element = E('w:hyperlink', attrs=attrs).append_to(paragraph, index)
+        element = paragraph(expression, index=index)
         for identity in selected: xml.move_node(identity, element.node_id, xml.child_count(element.node_id))
         return Hyperlink(self, element)
 

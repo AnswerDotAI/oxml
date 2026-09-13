@@ -6,7 +6,9 @@ metadata used by the native validator. Stable views share one native XML state.
 import json
 import re
 from enum import Enum
+from functools import cache
 from types import MappingProxyType, SimpleNamespace
+from fastcore.xml import XML as _Expression
 from . import _core
 
 metadata = json.loads(_core.metadata_json())
@@ -18,6 +20,49 @@ def _snake(name): return re.sub(r'(?<!^)(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])', 
 def _expanded(qname):
     prefix, _, local = qname.rpartition(':')
     return metadata['namespaces'].get(prefix, ''), local
+
+def _particle_slots(particle):
+    if 'Name' in particle: return [{_expanded(particle['Name'].rsplit('/', 1)[-1])}], set()
+    parts = [_particle_slots(p) for p in particle.get('Items', [])]
+    slots = [slot for groups, _ in parts for slot in groups]
+    names = set().union(*slots)
+    ambiguous = set().union(*(a for _, a in parts))
+    kind = particle.get('Kind')
+    if kind in ('Choice', 'All'):
+        for groups, _ in parts:
+            if len(groups) > 1: ambiguous.update(set().union(*groups))
+        slots = [names]
+    elif kind not in ('Sequence', 'Group'): return [{None}], names
+    if len(slots) > 1 and any(o.get('Max', 2) > 1 for o in particle.get('Occurs', [])):
+        ambiguous.update(names)
+        slots = [names]
+    return slots, ambiguous
+
+@cache
+def _child_order(type_id):
+    particle = metadata['types'].get(type_id, {}).get('particle')
+    if not particle: return {}
+    slots, ambiguous = _particle_slots(particle)
+    order = {}
+    for rank, names in enumerate(slots):
+        if None in names: return {}
+        for name in names:
+            if name in order: ambiguous.add(name)
+            order[name] = rank
+    return {name: rank for name, rank in order.items() if name not in ambiguous}
+
+def _position(parent, qname):
+    "Find a schema-order slot without reordering existing XML children."
+    order = _child_order(parent.type_id)
+    if qname not in order: raise ValueError(f'No unambiguous schema position for {qname}; supply index=')
+    ids = parent._tree.xml.children(parent.node_id)
+    index, previous = len(ids), -1
+    for child in parent.children:
+        rank = order.get(child.qname)
+        if rank is None or rank < previous: raise ValueError('Existing children have unclear schema order; supply index=')
+        if rank > order[qname] and index == len(ids): index = ids.index(child.node_id)
+        previous = rank
+    return index
 
 def _walk(element):
     yield element
@@ -89,6 +134,17 @@ class Element:
         return [self._tree._element(i) for i in ids if json.loads(self._tree.xml.node(i))['kind'] == 'element']
 
     def append_xml(self, data): return self.insert_xml(self._tree.xml.child_count(self.node_id), data)
+
+    def __call__(self, expression, *, index=None):
+        "Attach one detached expression and return its live view; use schema order unless index is explicit."
+        self._check()
+        if not isinstance(expression, _Expression):
+            raise TypeError('Attach a detached XML expression; use copy_to or move_to for live elements')
+        if index is None:
+            prefix, _, local = expression.tag.rpartition(':')
+            index = _position(self, (expression.ns.get(prefix, ''), local))
+        element, = self.insert_xml(index, expression.bytes())
+        return element
 
     def delete(self): self._tree.xml.delete(self.node_id)
 

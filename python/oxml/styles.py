@@ -1,7 +1,7 @@
 """Explicit style definitions/references, without computing a formatting cascade."""
 from ._core import Xml
-from .build import E
-from .model import metadata, _expanded, _one, _choose_prefix
+from .build import e
+from .model import metadata, _one, _choose_prefix
 
 _W = metadata['namespaces']['w']
 _TARGETS = {'paragraph': ('p', 'pPr', 'pStyle'), 'character': ('r', 'rPr', 'rStyle'), 'table': ('tbl', 'tblPr', 'tblStyle')}
@@ -9,22 +9,9 @@ _TARGETS = {'paragraph': ('p', 'pPr', 'pStyle'), 'character': ('r', 'rPr', 'rSty
 def _child(element, local):
     return _one((e for e in element.children if e.qname == (_W, local)), local)
 
-def _particle_names(particle):
-    if 'Name' in particle: yield _expanded(particle['Name'].rsplit('/', 1)[-1])
-    for item in particle.get('Items', []): yield from _particle_names(item)
-
-def _position(parent, local):
-    """Insert a known property/definition in imported schema order; never reorder siblings."""
-    particle = metadata['types'].get(parent.type_id, {}).get('particle') or {}
-    order = {name: index for index, name in enumerate(dict.fromkeys(_particle_names(particle)))}
-    if (_W, local) not in order: raise ValueError(f'No declared position for w:{local}')
-    xml = parent._tree.xml
-    return next((xml.children(parent.node_id).index(e.node_id) for e in parent.children
-                 if order.get(e.qname, -1) > order[(_W, local)]), xml.child_count(parent.node_id))
-
 def _ensure(parent, local):
     child = _child(parent, local)
-    return child if child is not None else E('w:'+local).append_to(parent, _position(parent, local))
+    return child if child is not None else parent(e(local))
 
 def _attribute(element, local, value):
     value = str(value)
@@ -58,7 +45,7 @@ class Styles:
         return _one((s for s in self if s.name == name and (kind is None or s.kind == kind)), 'style name')
 
     def add(self, style_id, *, name=None, kind='paragraph', based_on=None, paragraph=(), run=()):
-        """Create a style; paragraph/run are E or Element property children, not computed formatting."""
+        """Create a style; paragraph/run are XML or Element property children, not computed formatting."""
         if not isinstance(style_id, str) or not style_id: raise ValueError('style_id requires a nonempty string')
         if name is not None and not isinstance(name, str): raise TypeError('Style name requires str')
         if kind not in _TARGETS: raise ValueError('Style kind must be paragraph, character or table')
@@ -66,13 +53,13 @@ class Styles:
         if based_on is not None and self[based_on].kind != kind: raise ValueError('Base style must have the same kind')
         paragraph, run = tuple(paragraph), tuple(run)
         if kind == 'character' and paragraph: raise ValueError('Character styles cannot have paragraph properties')
-        expression = E('w:style', E('w:name', attrs={'w:val': name if name is not None else style_id}),
-                       E('w:basedOn', attrs={'w:val': based_on}) if based_on is not None else None,
-                       E('w:pPr', *paragraph) if paragraph else None, E('w:rPr', *run) if run else None,
-                       attrs={'w:type': kind, 'w:styleId': style_id, 'w:customStyle': '1'})
+        expression = e.style(e.name(val=name if name is not None else style_id),
+                             e.basedOn(val=based_on) if based_on is not None else None,
+                             e.pPr(*paragraph) if paragraph else None, e.rPr(*run) if run else None,
+                             type=kind, styleId=style_id, customStyle='1')
         Xml(expression.bytes())
         root = self._root(True)
-        return Style(self, expression.append_to(root, _position(root, 'style')))
+        return Style(self, root(expression))
 
 class Style:
     def __init__(self, styles, element): self.styles, self.element = styles, element

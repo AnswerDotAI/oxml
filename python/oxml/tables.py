@@ -1,5 +1,5 @@
 """Small structural operations on rectangular Word tables; merged/revised grids are refused."""
-from .build import E
+from .build import e
 from .model import Element, _walk, metadata
 from .text import _name, _run_text, _shell
 from .revisions import _revision_name
@@ -12,8 +12,8 @@ def _cell(template, text=''):
     paragraph = paragraphs[0] if paragraphs else None
     runs = [] if paragraph is None else _children(paragraph, 'r')
     properties = [] if paragraph is None else _children(paragraph, 'pPr')
-    content = [E('w:p', *properties, _run_text(runs[0] if runs else None, line)) for line in text.split('\n')]
-    return E('w:tc', *([] if template is None else _children(template, 'tcPr')), *content)
+    content = [e.p(*properties, _run_text(runs[0] if runs else None, line)) for line in text.split('\n')]
+    return e.tc(*([] if template is None else _children(template, 'tcPr')), *content)
 
 class Table:
     """Live table rows/cells. Use Story(cell) for text; column edits affect every row.
@@ -33,15 +33,11 @@ class Table:
         widths, values = list(widths), [list(row) for row in values]
         if not widths or any(type(v) is not int or v <= 0 for v in widths): raise ValueError('Widths require positive integer twips')
         if not values or any(len(row) != len(widths) for row in values): raise ValueError('Rows must match the nonempty column grid')
-        expression = E('w:tbl', E('w:tblPr'), E('w:tblGrid', *(E('w:gridCol', attrs={'w:w': v}) for v in widths)),
-                       *(E('w:tr', *(_cell(None, text) for text in row)) for row in values))
-        if index is None:
-            xml = parent._tree.xml
-            index = next((xml.children(parent.node_id).index(c.node_id) for c in parent.children if _name(c) == 'sectPr'),
-                         xml.child_count(parent.node_id))
-            if _name(parent) == 'tc' and parent.children and _name(parent.children[-1]) == 'p':
-                index = xml.children(parent.node_id).index(parent.children[-1].node_id)
-        return cls(expression.append_to(parent, index))
+        expression = e.tbl(e.tblPr(), e.tblGrid(e.gridCol(w=v) for v in widths),
+                           (e.tr(_cell(None, text) for text in row) for row in values))
+        if index is None and _name(parent) == 'tc' and parent.children and _name(parent.children[-1]) == 'p':
+            index = parent._tree.xml.children(parent.node_id).index(parent.children[-1].node_id)
+        return cls(parent(expression, index=index))
 
     @property
     def rows(self): return _children(self.element, 'tr')
@@ -77,7 +73,7 @@ class Table:
         expression = _shell(template, *_children(template, 'trPr'), *(_cell(c, text) for c, text in zip(cells, values)))
         xml = self.element._tree.xml
         position = xml.children(self.element.node_id).index(template.node_id) + (index == len(rows))
-        row = expression.append_to(self.element, position)
+        row = self.element(expression, index=position)
         for local in ('paraId', 'textId'): row.remove_attribute(metadata['namespaces']['w14'], local)
         return row
 
@@ -99,7 +95,7 @@ class Table:
         for row, expression in zip(rows, expressions):
             cell = _children(row, 'tc')[adjacent]
             position = row._tree.xml.children(row.node_id).index(cell.node_id)+(index == len(columns))
-            result.append(expression.append_to(row, position))
+            result.append(row(expression, index=position))
         return result
 
     def delete_column(self, index):

@@ -6,19 +6,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, Story, compare, w
+from oxml import Document, e, Story, compare, w
 from corpus_helpers import parts
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 DATE = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
 def paragraph(*runs, align='left'):
-    return E('w:p', E('w:pPr', E('w:jc', attrs={'w:val': align})),
-             *(E('w:r', E('w:rPr', E('w:'+style)) if style else None, E('w:t', text)) for text, style in runs))
+    return e.p(e.pPr(e.jc(val=align)),
+               (e.r(e.rPr(e(style)) if style else None, e.t(text)) for text, style in runs))
 
 def document(*children):
     doc = Document.new()
-    for child in children: child.append_to(next(doc.main.xml.elements(w.Body)))
+    body = next(doc.main.xml.elements(w.Body))
+    for child in children: body(child)
     return doc
 
 def endpoint(doc):
@@ -37,7 +38,7 @@ def endpoint(doc):
 
 @pytest.mark.parametrize('accept', [False, True])
 def test_text_and_formatting_endpoints_preserve_equal_and_opaque_regions(accept):
-    table = E('w:tbl', E('w:tr', E('w:tc', E('w:p', E('w:r', E('w:t', 'Opaque table'))))))
+    table = e.tbl(e.tr(e.tc(e.p(e.r(e.t('Opaque table'))))))
     before = document(paragraph(('Terms: ', ''), ('fourteen', 'b'), (' days.', '')), table,
                       paragraph(('A unchanged Z', '')))
     after = document(paragraph(('Terms: ', 'i'), ('twenty-', 'b'), ('one', 'i'), (' days!', ''), align='right'), table,
@@ -86,7 +87,7 @@ def test_real_docx_noop_metadata_noise_and_changed_dependency_refusal():
     settings = after._part('DocumentSettingsPart').xml.root
     for child in settings.children:
         if child.qname == (W[1:-1], 'rsids'): child.delete()
-    E('w:rsids', E('w:rsid', attrs={'w:val': '01020304'})).append_to(settings)
+    settings(e.rsids(e.rsid(val='01020304')))
     result = compare(before, after, author='Reviewer')
     assert result.package.read_part(core) == before.package.read_part(core)
     result.revisions.accept_all()
@@ -97,7 +98,7 @@ def test_real_docx_noop_metadata_noise_and_changed_dependency_refusal():
 def test_unsupported_changes_and_existing_revisions_are_not_flattened():
     before = document(paragraph(('abc', '')))
     after = Document.from_bytes(before.bytes())
-    E('w:fldSimple', attrs={'w:instr': 'DATE'}).append_to(next(after.main.xml.elements(w.Paragraph)))
+    next(after.main.xml.elements(w.Paragraph))(e.fldSimple(instr='DATE'))
     with pytest.raises(NotImplementedError, match='ordinary runs'): compare(before, after, author='Reviewer')
     before.revisions.replace(before.story.find('b'), 'B', author='Other')
     with pytest.raises(NotImplementedError, match='existing revisions'): compare(before, before, author='Reviewer')
@@ -105,7 +106,7 @@ def test_unsupported_changes_and_existing_revisions_are_not_flattened():
 def test_break_metadata_and_foreign_xml_whitespace_are_not_silently_discarded():
     before = document(paragraph(('abc', '')))
     after = Document.from_bytes(before.bytes())
-    E('w:br', attrs={'w:clear': 'all'}).append_to(next(after.main.xml.elements(w.Run)))
+    next(after.main.xml.elements(w.Run))(e.br(clear='all'))
     with pytest.raises(NotImplementedError, match='metadata'): compare(before, after, author='Reviewer')
     after = Document.from_bytes(before.bytes())
     for doc, spaces in [(before, ' '), (after, '  ')]:

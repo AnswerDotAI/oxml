@@ -1,7 +1,7 @@
 """Paragraph endpoints and properties, independent of the live text projector."""
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, Story, w
+from oxml import Document, e, Story, w
 from oxml.paragraphs import split_paragraph, join_paragraphs
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
@@ -11,8 +11,7 @@ def document(lines):
     doc = Document.new()
     body = next(doc.main.xml.elements(w.Body))
     for i, line in enumerate(lines):
-        E('w:p', E('w:pPr', E('w:pStyle', attrs={'w:val': f'Style{i}'})),
-          E('w:r', E('w:t', line)), attrs={'w14:paraId': f'{i+1:08X}'}).append_to(body)
+        body(e.p(e.pPr(e.pStyle(val=f'Style{i}')), e.r(e.t(line)), w14__paraId=f'{i+1:08X}'))
     return doc
 
 def endpoints(doc):
@@ -60,13 +59,12 @@ def test_multiline_tracked_endpoints(lines, start, end, replacement, expected, a
 
 def test_container_and_section_boundaries_refuse_before_editing():
     doc = Document.new()
-    E('w:tbl', E('w:tr', *(E('w:tc', E('w:p', E('w:r', E('w:t', value)))) for value in ('a', 'b')))).append_to(
-        next(doc.main.xml.elements(w.Body)))
+    next(doc.main.xml.elements(w.Body))(e.tbl(e.tr(e.tc(e.p(e.r(e.t(value)))) for value in ('a', 'b'))))
     original = doc.bytes()
     with pytest.raises(NotImplementedError): doc.story.range(0, 3).replace('x')
     assert doc.bytes() == original
     first = next(doc.main.xml.elements(w.Paragraph))
-    E('w:pPr', E('w:sectPr')).append_to(first, 0)
+    first(e.pPr(e.sectPr()))
     original = doc.bytes()
     with pytest.raises(NotImplementedError): split_paragraph(first, 1)
     assert doc.bytes() == original

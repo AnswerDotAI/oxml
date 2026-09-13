@@ -4,7 +4,7 @@ Paragraphs use '\\n', tabs '\\t', line breaks '\\v', and opaque structures U+FFF
 Unsupported structures stay explicit in read-only text; edits never flatten them.
 """
 import json
-from .build import E
+from .build import E, e
 from .model import Element, metadata, _walk
 from ._core import Xml
 
@@ -90,12 +90,12 @@ def _paragraph(element, view='current', positions=None):
     return text, spans, barriers
 
 def _shell(element, *children):
-    if element is None: return E('w:r', *children)
+    if element is None: return e.r(*children)
     raw = element.raw
     name = ':'.join(filter(None, (raw['prefix'], raw['qname'][1])))
     attrs = {':'.join(filter(None, (prefix, local))): value
              for prefix, (_, local, value) in zip(raw['attribute_prefixes'], raw['attributes'])}
-    return E(name, *children, attrs=attrs, ns=dict(raw['namespaces']))
+    return E(ns=dict(raw['namespaces']))(name, *children, attrs_=attrs)
 
 def _run_text(template, text):
     """Make replacement run XML using the affected run's properties/attributes/context."""
@@ -105,10 +105,10 @@ def _run_text(template, text):
     start = 0
     for index, char in enumerate(text):
         if char not in '\t\v': continue
-        if start < index: children.append(E('w:t', text[start:index], attrs={'xml:space': 'preserve'}, ns={'w': _W}))
-        children.append(E('w:tab' if char == '\t' else 'w:br', ns={'w': _W}))
+        if start < index: children.append(e.t(text[start:index], xml__space='preserve'))
+        children.append(e.tab() if char == '\t' else e.br())
         start = index + 1
-    if start < len(text): children.append(E('w:t', text[start:], attrs={'xml:space': 'preserve'}, ns={'w': _W}))
+    if start < len(text): children.append(e.t(text[start:], xml__space='preserve'))
     return _shell(template, *children)
 
 def _split_run(run, offset):
@@ -259,8 +259,8 @@ class Range:
             markers = [c for c in run.children if _name(c) == 'commentReference'] if extract_references else []
             if not markers: continue
             xml = paragraph._tree.xml
-            marker_run = _shell(run, *(c for c in run.children if _name(c) == 'rPr')).append_to(
-                paragraph, xml.children(paragraph.node_id).index(run.node_id)+1)
+            marker_run = paragraph(_shell(run, *(c for c in run.children if _name(c) == 'rPr')),
+                index=xml.children(paragraph.node_id).index(run.node_id)+1)
             for marker in markers: marker.move_to(marker_run, xml.child_count(marker_run.node_id))
         return paragraph, selected, index, template
 
@@ -283,6 +283,6 @@ class Range:
         Xml(expression.bytes())  # Validate the small detached replacement before splitting live runs.
         if self.start == self.end and not text: return self
         paragraph, runs, index, _ = self._isolate(extract_references=True)
-        if text: expression.append_to(paragraph, index)
+        if text: paragraph(expression, index=index)
         for run in runs: run.delete()
         return self.story.range(self.start, self.start+len(text))

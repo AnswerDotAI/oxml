@@ -1,8 +1,8 @@
-"""Explicit style edits over original python-docx fixtures, preserving direct overrides."""
+"""Explicit style edits over a Pandoc fixture, with python-docx API examples and preserved direct overrides."""
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, w
+from oxml import Document, e, w
 from oxml.styles import Styles
 from corpus_helpers import parts
 
@@ -21,8 +21,8 @@ def test_create_find_apply_styles_with_relocated_part_and_direct_overrides(tmp_p
     before = parts(doc)
     styles = doc.styles
     assert styles.find('Emphasis', 'character').id == 'Emphasis' and styles.find('Absent') is None
-    clause = styles.add('Clause', name='Legal clause', based_on='Normal', paragraph=[E('w:keepNext')])
-    emphasis = styles.add('ClauseEmphasis', kind='character', based_on='Emphasis', run=[E('w:i', attrs={'w:val': '0'})])
+    clause = styles.add('Clause', name='Legal clause', based_on='Normal', paragraph=[e.keepNext()])
+    emphasis = styles.add('ClauseEmphasis', kind='character', based_on='Emphasis', run=[e.i(val='0')])
     paragraph, run = next(doc.main.xml.elements(w.Paragraph)), next(doc.main.xml.elements(w.Run))
     old_run = ET.fromstring(doc.main.xml.xml.subtree_bytes(run.node_id))
     clause.apply(paragraph)
@@ -49,7 +49,7 @@ def test_create_find_apply_styles_with_relocated_part_and_direct_overrides(tmp_p
 def test_style_creation_collision_and_refusals():
     doc = Document.new()
     doc.package.add_part('/word/styles.xml', 'application/octet-stream', b'occupied')
-    paragraph = E('w:p', E('w:r', E('w:t', 'Text'))).append_to(doc.main.xml.root.children[0])
+    paragraph = doc.main.xml.root.children[0](e.p(e.r(e.t('Text'))))
     styles = Styles(doc)
     style = styles.add('Body')
     assert doc._part('StyleDefinitionsPart').uri != '/word/styles.xml'
@@ -62,6 +62,6 @@ def test_style_creation_collision_and_refusals():
     with pytest.raises(ValueError): style.apply(paragraph.children[-1])
     with pytest.raises(ValueError): styles.add('Bad', name='\x00')
     other = Document.new()
-    foreign = E('w:p').append_to(other.main.xml.root.children[0])
+    foreign = other.main.xml.root.children[0](e.p())
     with pytest.raises(ValueError): style.apply(foreign)
     assert doc.bytes() == before and doc.package.read_part('/word/styles.xml') == b'occupied'

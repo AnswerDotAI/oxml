@@ -213,7 +213,7 @@ class Document:
             while uri.lower() in names:
                 number += 1
                 uri = f'{base}{number}.xml'
-            part = self.package.add_part(uri, info['ContentType'], E(qname).bytes())
+            part = self.package.add_part(uri, info['ContentType'], E()(qname).bytes())
             self.package.add_relationship(main, info['RelationshipType'], uri)
         else:
             rel = relations[0]

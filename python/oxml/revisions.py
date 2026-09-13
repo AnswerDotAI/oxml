@@ -1,7 +1,7 @@
 """Tracked text, paragraph-boundary and property edits in one explicit story."""
 from datetime import datetime, timezone
 from ._core import Xml
-from .build import E
+from .build import e
 from .model import metadata, _walk
 from .text import Story, Range, _W, _CONTAINERS, _name, _content, _token, _run_text, _OPAQUE, _inside
 
@@ -24,7 +24,7 @@ def _revision_attrs(tree, author, date=None):
     if date is None: date = datetime.now(timezone.utc)
     if not isinstance(date, datetime) or date.utcoffset() is None: raise ValueError('date requires a timezone-aware datetime')
     attrs = {'w:author': author, 'w:date': date.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')}
-    Xml(E('w:ins', attrs=attrs, ns={'w': _W}).bytes())
+    Xml(e.ins(attrs_=attrs).bytes())
     used = set()
     for element in tree.elements():
         value = element.attribute(_W, 'id')
@@ -112,13 +112,10 @@ def _check_boundary(element, successors=None):
 def _add_mark(paragraph, expression):
     from .paragraphs import _property
     properties = _property(paragraph, 'pPr')
-    if properties is None: properties = E('w:pPr').append_to(paragraph, 0)
+    if properties is None: properties = paragraph(e.pPr())
     run_properties = _property(properties, 'rPr')
-    if run_properties is None:
-        index = next((i for i, node in enumerate(_content(properties)) if node.get('qname') in
-                      [[_W, 'sectPr'], [_W, 'pPrChange']]), properties._tree.xml.child_count(properties.node_id))
-        run_properties = E('w:rPr').append_to(properties, index)
-    return expression.append_to(run_properties, 0)
+    if run_properties is None: run_properties = properties(e.rPr())
+    return run_properties(expression)
 
 class Revision:
     """One live supported revision. Consuming it invalidates its element handle."""
@@ -254,14 +251,14 @@ class Revisions:
         expressions = []
         for kind, needed in [('del', span.start != span.end), ('ins', bool(text))]:
             if not needed: continue
-            expression = E('w:'+kind, insertion if kind == 'ins' else None, attrs=next(attrs), ns={'w': _W})
+            expression = e(kind, insertion if kind == 'ins' else None, attrs_=next(attrs))
             Xml(expression.bytes())  # Check the small detached payload and metadata before splitting live runs.
             expressions.append((kind, expression))
         if not expressions: return ()
         paragraph, runs, index, _ = span._isolate(extract_references=True)
         revisions = []
         for kind, expression in expressions:
-            element = expression.append_to(paragraph, index)
+            element = paragraph(expression, index=index)
             if kind == 'del':
                 for run in runs: run.move_to(element, element._tree.xml.child_count(element.node_id))
                 _rename_text(runs, 't', 'delText')
@@ -278,7 +275,7 @@ class Revisions:
         _inside(self.story, paragraph)
         attrs = _revision_attrs(paragraph._tree, author, date)
         def expression(kind, child=None):
-            result = E('w:'+kind, child, attrs=next(attrs), ns={'w': _W})
+            result = e(kind, child, attrs_=next(attrs))
             Xml(result.bytes())
             return result
         chunks = _replacement_runs(parts[0][3], text)
@@ -290,7 +287,7 @@ class Revisions:
         prefix_length = isolated[0][2]-_content_start(isolated[0][0])
         for (paragraph, runs, index, _), deletion in zip(isolated, deletions):
             if deletion is None: continue
-            element = deletion.append_to(paragraph, index)
+            element = paragraph(deletion, index=index)
             for run in runs: run.move_to(element, element._tree.xml.child_count(element.node_id))
             _rename_text(runs, 't', 'delText')
             created.append(Revision(element))
@@ -299,7 +296,7 @@ class Revisions:
         index = _content_start(paragraph)+prefix_length+(deletions[0] is not None)
         for i, insertion in enumerate(insertions):
             if insertion is not None:
-                created.append(Revision(insertion.append_to(paragraph, index)))
+                created.append(Revision(paragraph(insertion, index=index)))
                 index += 1
             if i < len(new_breaks):
                 left, paragraph = _split_at(paragraph, index)

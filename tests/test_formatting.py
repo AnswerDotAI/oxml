@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 import pytest
-from oxml import E, Tree, Story, Revisions, w
+from oxml import E, e, Tree, Story, Revisions, w
 from corpus_helpers import open_original, saved_edit
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
@@ -28,13 +28,12 @@ def test_existing_paragraph_mark_formatting(accept, tmp_path):
 @pytest.mark.parametrize('kind', ['r', 'p'])
 @pytest.mark.parametrize('accept', [True, False])
 def test_create_direct_formatting_and_restore_snapshot(kind, accept):
-    source = E('w:p', E('w:pPr', E('w:jc', attrs={'w:val': 'right'}), E('w:rPr', E('w:lang', attrs={'w:val': 'en-US'})),
-        E('w:sectPr', E('w:cols', attrs={'w:space': '720'}))),
-        E('w:r', E('w:rPr', E('w:b'), E('q:opaque'), attrs={'token': 'q:Type'}), E('w:t', 'unchanged')),
-        ns={'q': 'urn:opaque'}).bytes()
+    x = E('w', attr_ns='w', ns={'q': 'urn:opaque'})
+    source = x.p(x.pPr(x.jc(val='right'), x.rPr(x.lang(val='en-US')), x.sectPr(x.cols(space='720'))),
+        x.r(x.rPr(x.b(), x('q:opaque'), attrs_={'token': 'q:Type'}), x.t('unchanged'))).bytes()
     tree = Tree(source)
     target = tree.root if kind == 'p' else next(tree.elements(w.Run))
-    properties = E('w:pPr', E('w:jc', attrs={'w:val': 'center'})) if kind == 'p' else E('w:rPr', E('w:i'))
+    properties = e.pPr(e.jc(val='center')) if kind == 'p' else e.rPr(e.i())
     if kind == 'r': properties = Tree(properties.bytes()).root  # Parsed input is snapshotted, not moved.
     revisions = Revisions(Story(tree.root))
     change = revisions.format(target, properties, author='Reviewer', date=DATE)
@@ -43,7 +42,7 @@ def test_create_direct_formatting_and_restore_snapshot(kind, accept):
     assert before.raw['qname'][1] == kind+'Pr'
     if kind == 'r':
         assert before.attribute('', 'token') == 'q:Type' and dict(before.raw['namespaces'])['q'] == 'urn:opaque'
-        properties.append_xml(E('w:b').bytes())
+        properties.append_xml(e.b().bytes())
         assert [c.raw['qname'][1] for c in change.current.children] == ['i', 'rPrChange']
     else: assert [c.raw['qname'][1] for c in before.children] == ['jc']
     change.accept() if accept else change.reject()
@@ -58,15 +57,15 @@ def test_create_direct_formatting_and_restore_snapshot(kind, accept):
     else: assert [c.tag for c in result.find(W+'r/'+W+'rPr')] == [W+'i']
 
 def test_missing_properties_and_conflicting_history_refuse_before_mutation():
-    tree = Tree(E('w:p', E('w:r', E('w:t', 'text'))).bytes())
+    tree = Tree(e.p(e.r(e.t('text'))).bytes())
     target, revisions = next(tree.elements(w.Run)), Revisions(Story(tree.root))
-    change = revisions.format(target, E('w:rPr', E('w:b')), author='Reviewer', date=DATE)
+    change = revisions.format(target, e.rPr(e.b()), author='Reviewer', date=DATE)
     assert not change.previous.children
     original = tree.bytes()
-    for properties in (E('w:rPr', E('w:i')), E('w:pPr')):
+    for properties in (e.rPr(e.i()), e.pPr()):
         with pytest.raises((ValueError, NotImplementedError)): revisions.format(target, properties, author='Other', date=DATE)
         assert tree.bytes() == original
-    nested, = change.previous.append_xml(E('w:rPrChange', E('w:rPr'), attrs={'w:id': '9', 'w:author': 'Other'}).bytes())
+    nested, = change.previous.append_xml(e.rPrChange(e.rPr(), id='9', author='Other').bytes())
     original = tree.bytes()
     for operation in (change.accept, change.reject):
         with pytest.raises(NotImplementedError): operation()
@@ -75,5 +74,5 @@ def test_missing_properties_and_conflicting_history_refuse_before_mutation():
     change.reject()
     assert not target.children[0].children and Story(tree.root).text == 'text'
     original = tree.bytes()
-    with pytest.raises(ValueError): revisions.format(target, E('w:rPr'), author='bad\x00author', date=DATE)
+    with pytest.raises(ValueError): revisions.format(target, e.rPr(), author='bad\x00author', date=DATE)
     assert tree.bytes() == original

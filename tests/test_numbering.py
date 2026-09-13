@@ -2,7 +2,7 @@
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
-from oxml import Document, E, w
+from oxml import Document, e, w
 from oxml.numbering import Numbering, Level
 from corpus_helpers import parts
 
@@ -12,8 +12,8 @@ FIXTURE = Path(__file__).parent/'fixtures/body/lists_level_override.docx'
 def test_multilevel_definition_continuation_and_new_instance_restart():
     doc = Document.new()
     doc.package.add_part('/word/numbering.xml', 'application/octet-stream', b'occupied')
-    paragraphs = [E('w:p', E('w:pPr', E('w:keepNext'), E('w:spacing', attrs={'w:after': '120'})),
-                    E('w:r', E('w:t', text))).append_to(doc.main.xml.root.children[0]) for text in ('Top', 'Sub', 'Restart')]
+    body = doc.main.xml.root.children[0]
+    paragraphs = [body(e.p(e.pPr(e.keepNext(), e.spacing(after='120')), e.r(e.t(text)))) for text in ('Top', 'Sub', 'Restart')]
     numbering = doc.numbering
     instance = numbering.add([Level(), Level(format='lowerLetter', text='%1.%2)', restart=1)])
     instance.apply(paragraphs[0])
@@ -46,7 +46,7 @@ def test_multilevel_definition_continuation_and_new_instance_restart():
         (paragraphs[0].children[0].children[1], 'numId', lambda: instance.apply(paragraphs[0], level=1)),
         (restarted.element.children[1], 'startOverride', restarted.restart),
     ]:
-        duplicate = E('w:'+local, attrs={'w:val': '9'}).append_to(parent)
+        duplicate = parent(e(local, val='9'), index=parent._tree.xml.child_count(parent.node_id))
         before = doc.bytes()
         with pytest.raises(ValueError): operation()
         assert doc.bytes() == before
@@ -57,7 +57,7 @@ def test_multilevel_definition_continuation_and_new_instance_restart():
     assert doc.bytes() == before
 
 
-# Existing python-docx lists_level_override.docx supplies six list instances with independent start overrides.
+# Pandoc's lists_level_override.docx supplies six list instances with independent start overrides.
 # python-docx oxml/numbering.py models restart as num/lvlOverride/startOverride, not an abstract-definition mutation.
 def test_restart_preserves_real_overrides_definition_and_opaque_metadata(tmp_path):
     doc = Document.open(FIXTURE)
@@ -70,7 +70,7 @@ def test_restart_preserves_real_overrides_definition_and_opaque_metadata(tmp_pat
     original = numbering[2]
     original.element._tree.xml.set_attribute(original.element.node_id, 'urn:keep', 'opaque', 'original', 'keep')
     original.element.set_attribute(W[1:-1], 'durableId', '11')
-    E('w:numIdMacAtCleanup', attrs={'w:val': '6'}).append_to(doc._part('NumberingDefinitionsPart').xml.root)
+    doc._part('NumberingDefinitionsPart').xml.root(e.numIdMacAtCleanup(val='6'))
     before = parts(doc)
     restarted = original.restart(start=12)
     restarted.apply(list(doc.main.xml.elements(w.Paragraph))[1])
