@@ -48,7 +48,8 @@ Add a comment to a text range:
 
 ```python
 doc = Document.open('draft.docx')
-comment = doc.comments.add(doc.story.find('fourteen days'), 'Please extend this period.', 'Reviewer')
+comment = doc.comments.add(doc.story.find('fourteen days'),
+    'Please extend this period.', 'Reviewer')
 comment.reply('Agreed.', 'Drafter')
 comment.resolve()
 doc.save('commented.docx')
@@ -60,7 +61,8 @@ Record a replacement as a tracked change:
 
 ```python
 doc = Document.open('draft.docx')
-doc.revisions.replace(doc.story.find('fourteen days'), 'twenty-one days', author='Drafter')
+doc.revisions.replace(doc.story.find('fourteen days'),
+    'twenty-one days', author='Drafter')
 doc.save('redlined.docx')
 ```
 
@@ -87,7 +89,8 @@ Compare two documents to produce a new document with tracked text and direct-for
 ```python
 from oxml import Document, compare
 
-redline = compare(Document.open('original.docx'), Document.open('revised.docx'), author='Reviewer')
+redline = compare(Document.open('original.docx'),
+    Document.open('revised.docx'), author='Reviewer')
 redline.save('comparison.docx')
 ```
 
