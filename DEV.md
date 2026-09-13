@@ -4,6 +4,7 @@
 
 ```bash
 maturin develop && pytest -q
+cargo test
 ship-rs-build
 ```
 
@@ -11,29 +12,23 @@ Run `maturin develop` after Rust or embedded-descriptor changes to refresh the i
 
 ## Architecture
 
-The Rust layer owns XML, packages and validation:
+**One native owner of document state, one implementation of document rules, and thin Python bindings.** The Rust core is usable directly without initializing Python:
 
 * `src/xml.rs` stores ordered XML nodes in a mutable arena. It parses with quick-xml 0.42's decoding reader and checks XML well-formedness. Standalone trees, package parts and OPC control XML all use this editor and serializer.
-* `src/package.rs` reads and writes ZIP/OPC packages. It discovers the main part through relationships, manages content types and relationships, and copies untouched payloads on save.
-* `src/schema.rs` interprets the imported SDK content models, lexical constraints, versions and semantic rules against live XML trees.
+* `src/package.rs` owns ZIP/OPC packages and their loaded XML trees. Cloned handles share native state; reads and saving see edits without Python caches or flushing. Replacement/removal invalidates native part and XML handles. It also manages content types, relationships and custom XML datastores.
+* `src/schema.rs` interprets imported SDK types, content models, lexical constraints, versions and semantic rules. It also resolves contextual types, checks typed properties and determines insertion positions.
+* `src/package_schema.rs` shares declared-part discovery and relationship traversal between validation, story enumeration and document operations.
+* `src/text.rs` provides story projections, Unicode ranges, run splitting and paragraph operations. Review operations reuse its protection and selection rules.
+* `src/revisions.rs`, `src/comments.rs` and `src/links.rs` implement tracked edits, comments, bookmarks and hyperlinks. Timestamp validation and namespace handling are shared rather than reimplemented per feature.
+* `src/definitions.rs` and `src/tables.rs` implement styles, numbering and rectangular-table edits.
+* `src/importing.rs` transfers selected subtrees with per-import dependency and ID maps. `src/compare.rs` compares body text/direct formatting and uses the same revision writer as explicit edits.
+* `src/error.rs` supplies native errors; conversion to Python exceptions happens at the binding boundary.
 
 The schema layer builds one immutable index for contextual child lookup, semantic-rule dispatch and namespace availability. Content models compile once, including versioned occurrences. Their bounded matcher uses contiguous position sets. Validation borrows live dependency trees and uses compatibility-aware traversal for reference and uniqueness checks. Reference-value sets and duplicate tracking belong to each validation call.
 
-The Python layer exposes that state and implements document operations:
+`python/oxml/` contains Python views, argument/result conversion and detached construction conveniences. `model.py` creates nominal classes and enums from compact native descriptors; Python does not load the full schema or implement its rules. `build.py` adds namespace lookup and parsed-element snapshots to fastcore's builder. The other modules delegate document operations to Rust. There is no parallel Python implementation or compatibility layer.
 
-* `model.py` generates SDK-derived classes, enums and typed properties. It resolves contextual types through ancestor declarations and handles schema-order insertion.
-* `build.py` adds SDK namespace lookup and parsed-element snapshots to fastcore's XML builder.
-* `document.py` exposes `Document`, `Package` and `Part`. It caches one mutable tree per canonical part name, flushes edits at save and invalidates views after part replacement or removal. Equivalent case spellings resolve to the same tree. Story enumeration and validation share a per-call relationship walk over cached part trees. Imported part declarations supply package constraints and root checks. `_part` shares part discovery and creation among document operations.
-* `text.py` projects story text and tracks the XML revision associated with each range. Text replacement, comments, links and revisions share its run-splitting and replacement-run helpers.
-* `paragraphs.py` implements paragraph splits, joins and multiline replacement. Tracked paragraph edits use these helpers too.
-* `comments.py` maintains comment anchors, bodies, replies and resolution metadata in relationship-discovered parts.
-* `revisions.py` and `formatting.py` implement text, paragraph-boundary and property-history operations. They share author/date/ID generation and revision dispatch.
-* `styles.py` and `numbering.py` manage style definitions, references and numbered-list instances.
-* `tables.py` and `links.py` implement rectangular-table edits, bookmarks and hyperlinks.
-* `importing.py` stages selected subtrees and keeps dependency and ID-collision maps for each import.
-* `compare.py` uses standard-library text differencing and the revision/property APIs to edit a clone of the original document.
-
-Python module paths are relative to `python/oxml/`.
+XML/package handles use shared native ownership. A Python `Tree` wrapper is not the tree's identity: separately acquired wrappers can refer to the same native state. Native operations traverse nodes directly; JSON is used only for explicit raw snapshots and coarse validation reports, not internal node-by-node work. Small subtree snapshots are used where copying or retaining previous formatting requires them; ordinary edits do not clone documents or provide transaction rollback.
 
 ## XML construction
 
@@ -59,9 +54,9 @@ Automatic placement requires an unambiguous slot and existing children in known 
 
 Edits preflight the affected nodes, mutate live storage and invalidate cached serialization. Bytes are serialized when requested. The editing API has no transaction rollback.
 
-Node IDs survive unrelated edits and movement. Copies allocate new IDs. Deletion or replacement invalidates subtree IDs permanently. A typed view checks its contextual type after each XML revision. Reacquire the view if a move changes that type. `element.raw` produces an immutable node snapshot on demand. `Element.qname` returns the expanded `(namespace_uri, local_name)` pair. It and `Element.attribute` use scalar native getters.
+Node IDs survive unrelated edits and movement. Copies allocate new IDs. Deletion or replacement invalidates subtree IDs permanently. A typed view checks its contextual type natively. Reacquire the view if a move changes that type. `element.raw` produces an immutable node snapshot on demand. `Element.qname` returns the expanded `(namespace_uri, local_name)` pair. It and `Element.attribute` use scalar native getters.
 
-`copy_to(parent, index=None)` copies XML within or across trees. The default index is the parent's raw child count. Cross-tree copies export the subtree with its namespace context, including an empty default namespace where needed. Both copies and construction snapshots retain relationship and document IDs unchanged. Use `import_content` for supported package-dependency transfer and ID remapping. `move_to(parent, index)` moves an element within one tree.
+`copy_to(parent, index=None)` copies XML within or across trees. The default index is the parent's raw child count. Cross-tree copies transfer native subtrees with their namespace context, without serialization and reparsing. Both copies and construction snapshots retain relationship and document IDs unchanged. Use `import_content` for supported package-dependency transfer and ID remapping. `move_to(parent, index)` moves an element within one tree.
 
 Edits retain in-scope namespace bindings, including bindings used only in opaque attribute values. Renaming to an unqualified element clears its default namespace while preserving descendant contexts. Use a fresh prefix or an explicit namespace operation when a name edit would conflict with an existing binding.
 
@@ -189,6 +184,8 @@ The source policy targets parity with the pinned SDK. Independent standards conf
 ## Tests
 
 `test_xml.py`, `test_package.py` and `test_document.py` cover parser/editor safety, archive round trips and open-edit-validate-save workflows. `test_probe.py` and `test_holdout.py` cover difficult imported-schema cases and holdout regressions.
+
+`cargo test` runs `tests/native.rs`, an ownership, tracked-edit and save/reopen workflow that uses the Rust API without Python initialization.
 
 `test_sdk_attributes.py`, `test_sdk_particles.py`, `test_sdk_mc.py` and `test_sdk_semantics.py` adapt SDK inputs and expected behavior into self-contained Python tests. Source comments identify the upstream cases. They run without reference checkouts or .NET. Tests for unsupported cases must retain the SDK's expected outcome, with validation gaps reported separately.
 

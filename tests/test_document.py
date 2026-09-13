@@ -89,7 +89,7 @@ def test_equivalent_part_names_share_xml_state_and_invalidation():
     doc = Document.new()
     alias = doc.package.part('/WORD/DOCUMENT.XML')
     main = doc.main
-    assert alias.uri == main.uri and alias.xml is main.xml
+    assert alias.uri == main.uri and alias.xml.xml.same_state(main.xml.xml)
     root = alias.xml.root
     alias.xml.xml.set_attribute(root.node_id, '', 'flag', 'edited')
     assert b'flag="edited"' in doc.package.read_part('/Word/Document.xml')

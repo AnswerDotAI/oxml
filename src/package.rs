@@ -1,11 +1,11 @@
 use crate::xml::{self, check_local, xml_char, Attribute, Document, Element, Name, NodeKind};
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use crate::error::{Error, Result};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -22,12 +22,12 @@ const MAX_TOTAL: u64 = 1024 * 1024 * 1024;
 const MAX_ARCHIVE: usize = 512 * 1024 * 1024;
 const MAX_METADATA: u64 = 8 * 1024 * 1024;
 
-fn invalid(message: impl ToString) -> PyErr { PyValueError::new_err(message.to_string()) }
-fn zip_error(error: impl std::fmt::Display) -> PyErr { invalid(format!("Invalid or unsupported ZIP archive: {error}")) }
+fn invalid(message: impl ToString) -> Error { Error::Invalid(message.to_string()) }
+fn zip_error(error: impl std::fmt::Display) -> Error { invalid(format!("Invalid or unsupported ZIP archive: {error}")) }
 
 // This preflight does not read ZIP entries. zip-rs silently deduplicates its index, so
 // retain the bounded EOCD entry count before handing parsing to the ZIP implementation.
-fn zip_entry_count(data: &[u8]) -> PyResult<usize> {
+fn zip_entry_count(data: &[u8]) -> Result<usize> {
     if data.len() > MAX_ARCHIVE { return Err(invalid("Archive exceeds the 512 MiB limit")); }
     if data.starts_with(&[0xd0, 0xcf, 0x11, 0xe0]) { return Err(invalid("Encrypted/compound Office packages are unsupported")); }
     let end = (0..data.len().saturating_sub(21))
@@ -57,7 +57,7 @@ fn zip_entry_count(data: &[u8]) -> PyResult<usize> {
     Ok(count)
 }
 
-fn part_uri(uri: &str) -> PyResult<()> {
+fn part_uri(uri: &str) -> Result<()> {
     if uri == TYPES { return Ok(()); }
     if !uri.starts_with('/') || uri.len() < 2 || uri.ends_with('/') { return Err(invalid(format!("Invalid OPC part URI: {uri}"))); }
     for segment in uri[1..].split('/') {
@@ -85,7 +85,7 @@ fn part_uri(uri: &str) -> PyResult<()> {
     Ok(())
 }
 
-fn rels_uri(source: &str) -> PyResult<String> {
+fn rels_uri(source: &str) -> Result<String> {
     if source == "/" { return Ok("/_rels/.rels".into()); }
     part_uri(source)?;
     let (dir, name) = source.rsplit_once('/').unwrap();
@@ -99,7 +99,7 @@ fn rels_source(uri: &str) -> Option<String> {
     Some(format!("{}/{}", &dir[..dir.len() - 6], &name[..name.len() - 5]))
 }
 
-fn resolve_target(source: &str, target: &str) -> PyResult<String> {
+fn resolve_target(source: &str, target: &str) -> Result<String> {
     let path = target.split('#').next().unwrap();
     if path.contains(['?', '\\']) || path.starts_with("//") || path.split('/').next().unwrap().contains(':') {
         return Err(invalid(format!("Unsafe internal relationship target: {target}")));
@@ -121,14 +121,14 @@ fn resolve_target(source: &str, target: &str) -> PyResult<String> {
     Ok(result)
 }
 
-fn required<'a>(element: &'a Element, name: &str) -> PyResult<&'a str> {
+fn required<'a>(element: &'a Element, name: &str) -> Result<&'a str> {
     element.attribute("", name).filter(|s| !s.is_empty()).ok_or_else(|| invalid(format!("Missing {name} on OPC {}", element.name.local)))
 }
 
 // OPC-specific rules and edits over the same XML tree used for document parts.
 struct Metadata { doc: Document }
 impl Metadata {
-    fn read(data: &[u8], relationships: bool) -> PyResult<Self> {
+    fn read(data: &[u8], relationships: bool) -> Result<Self> {
         let doc = xml::parse_bytes_limited(data, MAX_METADATA as usize, 129)?;
         let root = doc.node(doc.root)?.element().unwrap();
         let (namespace, name) = if relationships { (REL_NS, "Relationships") } else { (CT_NS, "Types") };
@@ -166,7 +166,7 @@ impl Metadata {
         })
     }
 
-    fn write(mut self, remove: &[usize], append: Option<(&str, &[(&str, &str)])>) -> PyResult<Vec<u8>> {
+    fn write(mut self, remove: &[usize], append: Option<(&str, &[(&str, &str)])>) -> Result<Vec<u8>> {
         for &id in remove { self.doc.remove(id)?; }
         if let Some((local, attrs)) = append {
             let root = self.doc.node(self.doc.root)?.element().unwrap();
@@ -185,26 +185,27 @@ impl Metadata {
 }
 
 #[derive(Clone)]
-struct Relationship {
+pub struct Relationship {
     node_id: usize,
-    id: String,
-    kind: String,
-    target: String,
-    mode: String,
+    pub id: String,
+    pub kind: String,
+    pub target: String,
+    pub mode: String,
 }
 
-#[pyclass]
-pub struct Package {
+pub struct PackageData {
     original: Arc<[u8]>,
     archive: ZipArchive<Cursor<Arc<[u8]>>>,
     names: BTreeMap<String, String>,
     changes: BTreeMap<String, Option<Vec<u8>>>,
     main: String,
     signed: bool,
+    loaded: BTreeMap<String, (xml::Xml, u64)>,
+    generations: BTreeMap<String, u64>,
 }
 
-impl Package {
-    fn open(data: &[u8]) -> PyResult<Self> {
+impl PackageData {
+    pub fn open(data: &[u8]) -> Result<Self> {
         let count = zip_entry_count(data)?;
         let original: Arc<[u8]> = data.into();
         let mut archive = ZipArchive::new(Cursor::new(original.clone())).map_err(zip_error)?;
@@ -249,7 +250,7 @@ impl Package {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
             if entry.is_dir() { names.remove(&format!("/{}", entry.name().trim_end_matches('/')).to_ascii_lowercase()); }
         }
-        let mut package = Self { original, archive, names, changes: BTreeMap::new(), main: String::new(), signed: false };
+        let mut package = Self { original, archive, names, changes: BTreeMap::new(), main: String::new(), signed: false, loaded: BTreeMap::new(), generations: BTreeMap::new() };
         let types = package.types()?;
         package.signed = types.records().map(|(_, r)| r).any(|r| r.attribute("", "ContentType").is_some_and(|s| s.contains("digital-signature")));
         for uri in package.names.values() {
@@ -265,17 +266,18 @@ impl Package {
         Ok(package)
     }
 
-    fn existing(&self, uri: &str) -> PyResult<String> {
+    pub fn existing(&self, uri: &str) -> Result<String> {
         part_uri(uri)?;
         self.names
             .get(&uri.to_ascii_lowercase())
             .filter(|name| self.changes.get(*name) != Some(&None))
             .cloned()
-            .ok_or_else(|| PyKeyError::new_err(format!("No such OPC part: {uri}")))
+            .ok_or_else(|| Error::Missing(format!("No such OPC part: {uri}")))
     }
 
-    fn data(&self, uri: &str) -> PyResult<Vec<u8>> {
+    pub fn data(&self, uri: &str) -> Result<Vec<u8>> {
         let name = self.existing(uri)?;
+        if let Some((xml, _)) = self.loaded.get(&name) { return xml.to_bytes(); }
         if let Some(Some(data)) = self.changes.get(&name) { return Ok(data.clone()); }
         let mut archive = self.archive.clone();
         let mut entry = archive.by_name(&name[1..]).map_err(zip_error)?;
@@ -287,12 +289,12 @@ impl Package {
         Ok(data)
     }
 
-    fn editable(&self) -> PyResult<()> {
+    fn editable(&self) -> Result<()> {
         if self.signed { return Err(invalid("Signed packages are read-only; only unchanged pass-through saving is supported")); }
         Ok(())
     }
 
-    fn ordinary(&self, uri: &str) -> PyResult<()> {
+    fn ordinary(&self, uri: &str) -> Result<()> {
         self.editable()?;
         part_uri(uri)?;
         if uri.eq_ignore_ascii_case(TYPES) || rels_source(uri).is_some() { return Err(invalid("Use content-type/relationship operations for OPC metadata")); }
@@ -305,7 +307,7 @@ impl Package {
         self.changes.insert(name, Some(data));
     }
 
-    fn types(&self) -> PyResult<Metadata> {
+    fn types(&self) -> Result<Metadata> {
         let metadata = Metadata::read(&self.data(TYPES)?, false)?;
         let mut keys = HashSet::new();
         for (_, record) in metadata.records() {
@@ -317,7 +319,7 @@ impl Package {
         Ok(metadata)
     }
 
-    fn rels(&self, source: &str) -> PyResult<(Metadata, Vec<Relationship>)> {
+    fn rels(&self, source: &str) -> Result<(Metadata, Vec<Relationship>)> {
         let uri = rels_uri(source)?;
         let data = if self.existing(&uri).is_ok() { self.data(&uri)? } else { format!(r#"<Relationships xmlns="{REL_NS}"/>"#).into_bytes() };
         let metadata = Metadata::read(&data, true)?;
@@ -335,7 +337,7 @@ impl Package {
         Ok((metadata, result))
     }
 
-    fn set_type(&mut self, uri: &str, content_type: &str) -> PyResult<()> {
+    fn set_type(&mut self, uri: &str, content_type: &str) -> Result<()> {
         if !content_type.contains('/') || content_type.chars().any(|c| !xml_char(c) || c.is_control() || c.is_whitespace()) {
             return Err(invalid("Invalid content type"));
         }
@@ -349,7 +351,36 @@ impl Package {
         Ok(())
     }
 
-    fn output(&self) -> PyResult<Vec<u8>> {
+    fn invalidate(&mut self, uri: &str) {
+        if let Some((xml, _)) = self.loaded.remove(uri) { xml.invalidate(); }
+        *self.generations.entry(uri.to_string()).or_default() += 1;
+    }
+
+    pub fn load_xml(&mut self, uri: &str) -> Result<xml::Xml> {
+        let name = self.existing(uri)?;
+        if name == TYPES || rels_source(&name).is_some() {
+            return Err(invalid("Use scoped content-type and relationship APIs for package metadata"));
+        }
+        if let Some((xml, _)) = self.loaded.get(&name) { return Ok(xml.clone()); }
+        let xml = xml::Xml::new(&self.data(&name)?)?;
+        xml.set_read_only(self.signed);
+        self.loaded.insert(name, (xml.clone(), 0));
+        Ok(xml)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        for (uri, (xml, saved_revision)) in &mut self.loaded {
+            let revision = xml.revision();
+            if revision != *saved_revision {
+                self.changes.insert(uri.clone(), Some(xml.to_bytes()?));
+                *saved_revision = revision;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn output(&mut self) -> Result<Vec<u8>> {
+        self.flush()?;
         if self.changes.is_empty() { return Ok(self.original.to_vec()); }
         self.editable()?;
         let mut archive = self.archive.clone();
@@ -406,13 +437,8 @@ impl Package {
     }
 }
 
-#[pymethods]
-impl Package {
-    #[new]
-    fn py_new(data: &[u8]) -> PyResult<Self> { Self::open(data) }
-
-    #[staticmethod]
-    fn new() -> PyResult<Self> {
+impl PackageData {
+    pub fn new() -> Result<Self> {
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
         for (name, data) in [
             (
@@ -433,16 +459,14 @@ impl Package {
         Self::open(&writer.finish().map_err(zip_error)?.into_inner())
     }
 
-    #[getter]
-    fn main_part(&self) -> &str { &self.main }
+    pub fn main_part(&self) -> &str { &self.main }
 
-    fn resolve_part(&self, uri: &str) -> PyResult<String> { self.existing(uri) }
+    pub fn resolve_part(&self, uri: &str) -> Result<String> { self.existing(uri) }
 
-    fn part_names(&self) -> Vec<String> { self.names.values().filter(|n| self.changes.get(*n) != Some(&None)).cloned().collect() }
+    pub fn part_names(&self) -> Vec<String> { self.names.values().filter(|n| self.changes.get(*n) != Some(&None)).cloned().collect() }
 
-    fn read_part<'py>(&self, py: Python<'py>, uri: &str) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &self.data(uri)?)) }
 
-    fn content_type(&self, uri: &str) -> PyResult<String> {
+    pub fn content_type(&self, uri: &str) -> Result<String> {
         let name = self.existing(uri)?;
         if name == TYPES { return Err(invalid("[Content_Types].xml is package metadata, not a typed OPC part")); }
         let metadata = self.types()?;
@@ -459,7 +483,7 @@ impl Package {
         default.ok_or_else(|| invalid(format!("No content type for OPC part {name}")))
     }
 
-    fn add_part(&mut self, uri: &str, content_type: &str, data: &[u8]) -> PyResult<()> {
+    pub fn add_part(&mut self, uri: &str, content_type: &str, data: &[u8]) -> Result<()> {
         self.ordinary(uri)?;
         if self.existing(uri).is_ok() { return Err(invalid("OPC part already exists")); }
         if content_type.contains("digital-signature") { return Err(invalid("Creating digital signatures is unsupported")); }
@@ -469,7 +493,7 @@ impl Package {
         Ok(())
     }
 
-    fn set_content_type(&mut self, uri: &str, content_type: &str) -> PyResult<()> {
+    pub fn set_content_type(&mut self, uri: &str, content_type: &str) -> Result<()> {
         let name = self.existing(uri)?;
         if self.content_type(&name).is_ok_and(|s| s == content_type) { return Ok(()); }
         self.ordinary(&name)?;
@@ -478,16 +502,22 @@ impl Package {
         self.set_type(&name, content_type)
     }
 
-    fn replace_part(&mut self, uri: &str, data: &[u8]) -> PyResult<()> {
+    pub fn replace_part(&mut self, uri: &str, data: &[u8]) -> Result<()> {
         let name = self.existing(uri)?;
-        if self.data(&name)? == data { return Ok(()); }
+        if self.data(&name)? == data {
+            // A replacement still ends this part handle's lifetime, including for equal bytes.
+            self.flush()?;
+            self.invalidate(&name);
+            return Ok(());
+        }
         self.ordinary(&name)?;
         if data.len() as u64 > MAX_PART { return Err(invalid("Part exceeds the 256 MiB limit")); }
+        self.invalidate(&name);
         self.put(&name, data.to_vec());
         Ok(())
     }
 
-    fn remove_part(&mut self, uri: &str) -> PyResult<()> {
+    pub fn remove_part(&mut self, uri: &str) -> Result<()> {
         let name = self.existing(uri)?;
         self.ordinary(&name)?;
         if name == self.main { return Err(invalid("The DOCX main part cannot be removed")); }
@@ -514,48 +544,39 @@ impl Package {
             if !remove.is_empty() { updates.push((rel_uri.clone(), metadata.write(&remove, None)?)); }
         }
         for (uri, data) in updates { self.put(&uri, data); }
+        self.invalidate(&name);
         self.changes.insert(name, None);
         if let Ok(uri) = self.existing(&own_rels) { self.changes.insert(uri, None); }
         Ok(())
     }
 
-    fn relationships<'py>(&self, py: Python<'py>, source_uri: &str) -> PyResult<Bound<'py, PyList>> {
+    pub fn relationships(&self, source_uri: &str) -> Result<Vec<Relationship>> {
         if source_uri != "/" { self.existing(source_uri)?; }
-        let result = PyList::empty(py);
-        for rel in self.rels(source_uri)?.1 {
-            let item = PyDict::new(py);
-            item.set_item("id", rel.id)?;
-            item.set_item("type", rel.kind)?;
-            item.set_item("target", rel.target)?;
-            item.set_item("target_mode", rel.mode)?;
-            result.append(item)?;
-        }
-        Ok(result)
+        Ok(self.rels(source_uri)?.1)
     }
 
-    fn relationship_part(&self, source_uri: &str, relationship_id: &str) -> PyResult<Option<String>> {
+    pub fn relationship_part(&self, source_uri: &str, relationship_id: &str) -> Result<Option<String>> {
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         let rel =
-            self.rels(&source)?.1.into_iter().find(|r| r.id == relationship_id).ok_or_else(|| PyKeyError::new_err("No such relationship in this scope"))?;
+            self.rels(&source)?.1.into_iter().find(|r| r.id == relationship_id).ok_or_else(|| Error::Missing("No such relationship in this scope".into()))?;
         if rel.mode == "External" { return Ok(None); }
         Ok(Some(self.relationship_target(&source, &rel.target)?))
     }
 
     // Resolve an already-read internal relationship without reparsing its .rels file.
-    fn relationship_target(&self, source_uri: &str, target: &str) -> PyResult<String> {
+    pub fn relationship_target(&self, source_uri: &str, target: &str) -> Result<String> {
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         self.existing(&resolve_target(&source, target)?)
     }
 
-    #[pyo3(signature = (source_uri, relationship_type, target, target_mode="Internal", relationship_id=None))]
-    fn add_relationship(
+    pub fn add_relationship(
         &mut self,
         source_uri: &str,
         relationship_type: &str,
         target: &str,
         target_mode: &str,
         relationship_id: Option<&str>,
-    ) -> PyResult<String> {
+    ) -> Result<String> {
         self.editable()?;
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         if source != "/" { self.ordinary(&source)?; }
@@ -581,11 +602,11 @@ impl Package {
         Ok(id)
     }
 
-    fn remove_relationship(&mut self, source_uri: &str, relationship_id: &str) -> PyResult<()> {
+    pub fn remove_relationship(&mut self, source_uri: &str, relationship_id: &str) -> Result<()> {
         self.editable()?;
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         let (metadata, rels) = self.rels(&source)?;
-        let rel = rels.iter().find(|r| r.id == relationship_id).ok_or_else(|| PyKeyError::new_err("No such relationship in this scope"))?;
+        let rel = rels.iter().find(|r| r.id == relationship_id).ok_or_else(|| Error::Missing("No such relationship in this scope".into()))?;
         if source == "/" && [OFFICE_REL, STRICT_REL].contains(&rel.kind.as_str()) {
             return Err(invalid("The main officeDocument relationship cannot be removed"));
         }
@@ -595,19 +616,165 @@ impl Package {
         Ok(())
     }
 
-    fn bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &py.detach(|| self.output())?)) }
+    pub fn set_custom_xml(&mut self, item_id: &str, data: &[u8], schema_uri: Option<&str>) -> Result<String> {
+        let schema = crate::schema::schema();
+        let item_rel = schema["parts"]["CustomXmlPart"]["RelationshipType"].as_str().unwrap();
+        let props_info = &schema["parts"]["CustomXmlPropertiesPart"];
+        let props_rel = props_info["RelationshipType"].as_str().unwrap();
+        let props_type = props_info["ContentType"].as_str().unwrap();
+        let ds = schema["namespaces"]["ds"].as_str().unwrap();
+        let item_id = item_id.to_uppercase();
+        let main = self.main.clone();
+        for rel in self.relationships(&main)? {
+            if rel.kind != item_rel || rel.mode == "External" { continue; }
+            let item = self.relationship_target(&main, &rel.target)?;
+            for rel in self.relationships(&item)? {
+                if rel.kind != props_rel || rel.mode == "External" { continue; }
+                let props = self.relationship_target(&item, &rel.target)?;
+                let xml = self.load_xml(&props)?;
+                let matches = {
+                    let doc = xml.read()?;
+                    doc.node(doc.root)?.element().unwrap().attribute(ds, "itemID").is_some_and(|v| v.to_uppercase() == item_id)
+                };
+                if matches { self.replace_part(&item, data)?; return Ok(item); }
+            }
+        }
+        let n = (1..).find(|n| self.existing(&format!("/customXml/item{n}.xml")).is_err()
+            && self.existing(&format!("/customXml/itemProps{n}.xml")).is_err()).unwrap();
+        let (item, props) = (format!("/customXml/item{n}.xml"), format!("/customXml/itemProps{n}.xml"));
+        let element = |local: &str| Element {
+            name: Name { uri: ds.into(), local: local.into(), prefix: "ds".into() },
+            attributes: Vec::new(), namespaces: vec![("ds".into(), ds.into())],
+        };
+        let mut properties = Document::from_element(element("datastoreItem"));
+        properties.set_attribute(properties.root, ds, "itemID", &item_id, Some("ds"))?;
+        if let Some(uri) = schema_uri {
+            let refs = properties.add(Some(properties.root), NodeKind::Element(element("schemaRefs")))?;
+            let reference = properties.add(Some(refs), NodeKind::Element(element("schemaRef")))?;
+            properties.set_attribute(reference, ds, "uri", uri, Some("ds"))?;
+        }
+        let properties = properties.serialize()?;
+        self.add_part(&item, "application/xml", data)?;
+        self.add_part(&props, props_type, &properties)?;
+        self.add_relationship(&item, props_rel, &props, "Internal", None)?;
+        self.add_relationship(&main, item_rel, &item, "Internal", None)?;
+        Ok(item)
+    }
 
-    fn save(&self, py: Python<'_>, path: &str) -> PyResult<()> {
-        py.detach(|| {
-            let data = self.output()?;
-            let path = Path::new(path);
-            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-            temporary.write_all(&data)?;
-            if let Ok(metadata) = std::fs::metadata(path) { temporary.as_file().set_permissions(metadata.permissions())?; }
-            temporary.as_file().sync_all()?;
-            temporary.persist(path).map_err(|error| PyErr::from(error.error))?;
-            Ok(())
-        })
+    pub fn save(&mut self, path: &Path) -> Result<()> {
+        let data = self.output()?;
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(&data)?;
+        if let Ok(metadata) = std::fs::metadata(path) { temporary.as_file().set_permissions(metadata.permissions())?; }
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| Error::Io(error.error))?;
+        Ok(())
+    }
+}
+
+/// The package retains every loaded XML part; cloned handles never copy document state.
+#[derive(Clone)]
+#[pyclass(module = "oxml._core", from_py_object)]
+pub struct Package { state: Arc<Mutex<PackageData>> }
+impl Package {
+    pub fn lock(&self) -> Result<MutexGuard<'_, PackageData>> {
+        self.state.lock().map_err(|_| invalid("Package state lock was poisoned"))
+    }
+    pub fn from_bytes(data: &[u8]) -> Result<Self> { Ok(Self { state: Arc::new(Mutex::new(PackageData::open(data)?)) }) }
+    pub fn to_bytes(&self) -> Result<Vec<u8>> { self.lock()?.output() }
+}
+#[pymethods]
+impl Package {
+    #[new]
+    fn py_new(data: &[u8]) -> Result<Self> { Self::from_bytes(data) }
+    #[staticmethod]
+    pub fn new() -> Result<Self> { Ok(Self { state: Arc::new(Mutex::new(PackageData::new()?)) }) }
+    #[getter]
+    pub fn main_part(&self) -> Result<String> { Ok(self.lock()?.main.clone()) }
+    pub fn same_state(&self, other: &Package) -> bool { Arc::ptr_eq(&self.state, &other.state) }
+    pub fn resolve_part(&self, uri: &str) -> Result<String> { self.lock()?.existing(uri) }
+    pub fn part_names(&self) -> Result<Vec<String>> { Ok(self.lock()?.part_names()) }
+    pub fn part(&self, uri: &str) -> Result<Part> {
+        let state = self.lock()?;
+        let uri = state.existing(uri)?;
+        let generation = state.generations.get(&uri).copied().unwrap_or(0);
+        Ok(Part { package: self.clone(), uri, generation })
+    }
+    pub fn xml(&self, uri: &str) -> Result<xml::Xml> { self.lock()?.load_xml(uri) }
+    pub fn owner(&self, xml: &xml::Xml) -> Result<String> {
+        xml.read()?;
+        self.lock()?.loaded.iter().find(|(_, (tree, _))| tree.same_state(xml)).map(|(uri, _)| uri.clone())
+            .ok_or_else(|| invalid("Element does not belong to this package"))
+    }
+    fn read_part<'py>(&self, py: Python<'py>, uri: &str) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.lock()?.data(uri)?))
+    }
+    pub fn content_type(&self, uri: &str) -> Result<String> { self.lock()?.content_type(uri) }
+    pub fn set_content_type(&self, uri: &str, content_type: &str) -> Result<()> { self.lock()?.set_content_type(uri, content_type) }
+    pub fn add_part(&self, uri: &str, content_type: &str, data: &[u8]) -> Result<Part> {
+        self.lock()?.add_part(uri, content_type, data)?;
+        self.part(uri)
+    }
+    pub fn replace_part(&self, uri: &str, data: &[u8]) -> Result<Part> {
+        self.lock()?.replace_part(uri, data)?;
+        self.part(uri)
+    }
+    pub fn remove_part(&self, uri: &str) -> Result<()> { self.lock()?.remove_part(uri) }
+    fn relationships<'py>(&self, py: Python<'py>, source_uri: &str) -> PyResult<Bound<'py, PyList>> {
+        let result = PyList::empty(py);
+        for rel in self.lock()?.relationships(source_uri)? {
+            let item = PyDict::new(py);
+            item.set_item("id", rel.id)?;
+            item.set_item("type", rel.kind)?;
+            item.set_item("target", rel.target)?;
+            item.set_item("target_mode", rel.mode)?;
+            result.append(item)?;
+        }
+        Ok(result)
+    }
+    pub fn relationship_part(&self, source_uri: &str, relationship_id: &str) -> Result<Option<String>> {
+        self.lock()?.relationship_part(source_uri, relationship_id)
+    }
+    pub fn relationship_target(&self, source_uri: &str, target: &str) -> Result<String> { self.lock()?.relationship_target(source_uri, target) }
+    #[pyo3(signature = (source_uri, relationship_type, target, target_mode="Internal", relationship_id=None))]
+    pub fn add_relationship(&self, source_uri: &str, relationship_type: &str, target: &str, target_mode: &str, relationship_id: Option<&str>) -> Result<String> {
+        self.lock()?.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id)
+    }
+    pub fn remove_relationship(&self, source_uri: &str, relationship_id: &str) -> Result<()> { self.lock()?.remove_relationship(source_uri, relationship_id) }
+    #[pyo3(signature = (item_id, data, schema_uri=None))]
+    pub fn set_custom_xml(&self, item_id: &str, data: &[u8], schema_uri: Option<&str>) -> Result<Part> {
+        let uri = self.lock()?.set_custom_xml(item_id, data, schema_uri)?;
+        self.part(&uri)
+    }
+    fn bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &py.detach(|| self.to_bytes())?)) }
+    pub fn save(&self, path: &str) -> Result<()> { self.lock()?.save(Path::new(path)) }
+}
+
+#[derive(Clone)]
+#[pyclass(module = "oxml._core", from_py_object)]
+pub struct Part { package: Package, uri: String, generation: u64 }
+impl Part {
+    fn check(&self) -> Result<MutexGuard<'_, PackageData>> {
+        let state = self.package.lock()?;
+        if state.generations.get(&self.uri).copied().unwrap_or(0) != self.generation {
+            return Err(Error::Stale("Package part was removed or replaced".into()));
+        }
+        state.existing(&self.uri)?;
+        Ok(state)
+    }
+}
+#[pymethods]
+impl Part {
+    #[getter]
+    pub fn uri(&self) -> &str { &self.uri }
+    #[getter]
+    pub fn content_type(&self) -> Result<String> { self.check()?.content_type(&self.uri) }
+    #[getter]
+    pub fn xml(&self) -> Result<xml::Xml> { self.check()?.load_xml(&self.uri) }
+    fn read_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &self.check()?.data(&self.uri)?)) }
+    pub fn replace(&self, data: &[u8]) -> Result<Part> {
+        self.check()?.replace_part(&self.uri, data)?;
+        self.package.part(&self.uri)
     }
 }

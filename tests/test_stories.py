@@ -19,7 +19,7 @@ def test_real_stories_are_distinct_live_containers(fixture, counts):
     doc = Document.open(path)
     stories = list(doc.stories())
     assert Counter(s.element.raw['qname'][1] for s in stories) == counts
-    assert all(s.element._tree is doc.package.part(s.part_uri).xml for s in stories)
+    assert all(s.element._tree.xml.same_state(doc.package.part(s.part_uri).xml.xml) for s in stories)
     for local in ('footnote', 'endnote'):
         if local in counts:
             expected = ['-1', '0', '1'] if counts[local] == 3 else ['0', '1']

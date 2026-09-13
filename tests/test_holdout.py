@@ -1,9 +1,12 @@
 """Post-implementation H1: upstream fixture mismatch and datatype-aware imported facets."""
 from pathlib import Path
+import json
 from zipfile import ZipFile
 import pytest
 from oxml import Tree, namespaces, w
-from oxml.model import metadata, types
+from oxml.model import types
+
+metadata = json.loads((Path(__file__).parents[1]/'schema/metadata.json').read_text())
 
 def test_symex_holdout_typing_preservation_and_binary_length():
     with ZipFile(Path(__file__).parent/'fixtures/sdk/Of16-10-SymEx.docx') as z: source = z.read('word/document.xml')

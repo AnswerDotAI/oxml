@@ -5,7 +5,6 @@ from xml.dom.minidom import parseString
 from zipfile import ZipFile
 import pytest
 from oxml import Document, e, Tree, Story, w
-from oxml.text import _run_text
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 XML = 'http://www.w3.org/XML/1998/namespace'
@@ -64,13 +63,9 @@ def test_isolation_preserves_run_xml_context_and_opaque_siblings():
     original = tree.bytes()
     with pytest.raises(NotImplementedError): story.range(1, 4).replace('would discard XML metadata')
     assert tree.bytes() == original
-    selected = story.range(3, 4)
-    p, runs, index, template = selected._isolate()
-    assert [''.join(t.value for t in r.children if isinstance(t, w.Text)) for r in runs] == ['d']
-    assert index == 1 and template.attribute('', 'token') == 'q:Type'
-    replacement = p(_run_text(template, 'NEW'), index=index)
-    for run in runs: run.delete()
-    assert Story(p).text == 'abcNEWef\ufffc'
+    story.range(3, 4).replace('NEW')
+    assert story.text == 'abcNEWef\ufffc'
+    replacement = list(tree.root.children)[1]
     parsed = fromstring(tree.bytes())
     assert len(parsed.findall('.//{urn:opaque}other')) == 1
     assert all(r.get('token') == 'q:Type' and r.find(f'{{{W}}}rPr/{{{W}}}b') is not None for r in parsed)
@@ -98,8 +93,6 @@ def test_paragraph_and_opaque_boundaries_staleness_and_invalid_text_are_explicit
     for value in ('\r', '\x00'):
         with pytest.raises((ValueError, NotImplementedError)): first.range(0, 1).replace(value)
         assert doc.bytes() == original
-    with pytest.raises(NotImplementedError): story.find('e\nt')._preflight()
-    assert doc.bytes() == original
     selected = first.find('one')
     next(doc.main.xml.elements(w.Text)).value = 'raw edit'
     with pytest.raises(ReferenceError): selected.replace('stale')
@@ -112,7 +105,7 @@ def test_real_comment_annotation_label_is_not_story_text():
     expected = fromstring(comments.xml.subtree_bytes(comment.node_id))
     assert expected.find(f'.//{{{W}}}annotationRef') is not None
     assert Story(comment).text == '\n'.join(''.join(t.text or '' for t in p.iter(f'{{{W}}}t')) for p in expected.iter(f'{{{W}}}p'))
-    with pytest.raises(NotImplementedError): Story(comment).range(0, 0)._isolate()
+    with pytest.raises(NotImplementedError): Story(comment).range(0, 0).replace('blocked')
 
 def test_real_current_original_views_edit_beside_reviews_and_keep_comment_anchors(tmp_path):
     path = FIXTURE.parent.parent/'pandoc/track_changes_scrubbed_metadata.docx'

@@ -1,6 +1,11 @@
 """Namespace-bound XML construction and attachment to live document trees."""
 from fastcore.xml import E as _E, XML as _XML
-from .model import Element, metadata
+from .model import Element, namespace_uris
+
+def _bytes(value):
+    if isinstance(value, Element): return value._tree.xml.subtree_bytes(value.node_id)
+    if isinstance(value, _XML): return value.bytes()
+    raise TypeError('Expected an XML expression or Element')
 
 class _Snapshot(_XML):
     def __init__(self, element): self._data = element._tree.xml.subtree_bytes(element.node_id).decode('utf-8')
@@ -16,7 +21,7 @@ class E(_E):
     _node_cls = XML
 
     def _namespace(self, prefix):
-        if prefix not in self._ns and prefix in metadata['namespaces']: return metadata['namespaces'][prefix]
+        if prefix not in self._ns and prefix in namespace_uris: return namespace_uris[prefix]
         return super()._namespace(prefix)
 
 e = E('w', attr_ns='w')

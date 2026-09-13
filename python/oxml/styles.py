@@ -1,83 +1,30 @@
-"""Explicit style definitions/references, without computing a formatting cascade."""
-from ._core import Xml
-from .build import e
-from .model import metadata, _one, _choose_prefix
-
-_W = metadata['namespaces']['w']
-_TARGETS = {'paragraph': ('p', 'pPr', 'pStyle'), 'character': ('r', 'rPr', 'rStyle'), 'table': ('tbl', 'tblPr', 'tblStyle')}
-
-def _child(element, local):
-    return _one((e for e in element.children if e.qname == (_W, local)), local)
-
-def _ensure(parent, local):
-    child = _child(parent, local)
-    return child if child is not None else parent(e(local))
-
-def _attribute(element, local, value):
-    value = str(value)
-    if element.attribute(_W, local) == value: return
-    bindings = dict(element.raw['namespaces'])
-    prefix = _choose_prefix(bindings, _W, 'w')
-    element._tree.xml.set_attribute(element.node_id, _W, local, value, prefix)
-
-def _value(parent, local, value): _attribute(_ensure(parent, local), 'val', value)
+"""Explicit native style definitions and references, without a formatting cascade."""
+from . import _core
+from .build import _bytes
+from .model import Tree
 
 class Styles:
-    """Live styles indexed by exact styleId; find() uses the stored display name."""
+    "Live styles indexed by exact styleId; find() uses the stored display name."
     def __init__(self, doc): self.doc = doc
-
-    def _root(self, create=False):
-        part = self.doc._part('StyleDefinitionsPart', create)
-        return part.xml.root if part is not None else None
-
-    def __iter__(self):
-        root = self._root()
-        if root is not None:
-            for element in root.children:
-                if element.qname == (_W, 'style'): yield Style(self, element)
-
-    def __getitem__(self, style_id):
-        style = _one((s for s in self if s.id == style_id), 'style ID')
-        if style is None: raise KeyError(style_id)
-        return style
-
+    def __iter__(self): return (Style(self, s) for s in _core.style_items(self.doc.package._native))
+    def __getitem__(self, style_id): return Style(self, _core.style_get(self.doc.package._native, style_id))
     def find(self, name, kind=None):
-        return _one((s for s in self if s.name == name and (kind is None or s.kind == kind)), 'style name')
-
+        result = _core.style_find(self.doc.package._native, name, kind)
+        return None if result is None else Style(self, result)
     def add(self, style_id, *, name=None, kind='paragraph', based_on=None, paragraph=(), run=()):
-        """Create a style; paragraph/run are XML or Element property children, not computed formatting."""
-        if not isinstance(style_id, str) or not style_id: raise ValueError('style_id requires a nonempty string')
-        if name is not None and not isinstance(name, str): raise TypeError('Style name requires str')
-        if kind not in _TARGETS: raise ValueError('Style kind must be paragraph, character or table')
-        if any(s.id == style_id for s in self): raise ValueError('Style ID already exists')
-        if based_on is not None and self[based_on].kind != kind: raise ValueError('Base style must have the same kind')
-        paragraph, run = tuple(paragraph), tuple(run)
-        if kind == 'character' and paragraph: raise ValueError('Character styles cannot have paragraph properties')
-        expression = e.style(e.name(val=name if name is not None else style_id),
-                             e.basedOn(val=based_on) if based_on is not None else None,
-                             e.pPr(*paragraph) if paragraph else None, e.rPr(*run) if run else None,
-                             type=kind, styleId=style_id, customStyle='1')
-        Xml(expression.bytes())
-        root = self._root(True)
-        return Style(self, root(expression))
+        return Style(self, _core.style_add(self.doc.package._native, style_id, name, kind, based_on,
+                                           [_bytes(p) for p in paragraph], [_bytes(r) for r in run]))
 
 class Style:
-    def __init__(self, styles, element): self.styles, self.element = styles, element
+    def __init__(self, styles, native): self.styles, self._native = styles, native
     @property
-    def id(self): return self.element.attribute(_W, 'styleId')
+    def element(self): return Tree._from_native(self._native.xml)._element(self._native.node_id)
     @property
-    def kind(self): return self.element.attribute(_W, 'type') or 'paragraph'
+    def id(self): return self._native.id
     @property
-    def name(self):
-        name = _child(self.element, 'name')
-        return name.attribute(_W, 'val') if name is not None else None
-
+    def kind(self): return self._native.kind
+    @property
+    def name(self): return self._native.name
     def apply(self, element):
-        """Set only the style reference; preserve direct formatting and other properties."""
-        self.styles.doc.package._owner(element)
-        if self.kind not in _TARGETS: raise NotImplementedError('This style kind cannot be applied directly')
-        target, properties, reference = _TARGETS[self.kind]
-        if element.qname != (_W, target): raise ValueError(f'{self.kind} style requires a w:{target}')
-        if not self.id: raise ValueError('Style has no styleId')
-        _value(_ensure(element, properties), reference, self.id)
+        self._native.apply(element._tree.xml, element.node_id)
         return element

@@ -1,82 +1,16 @@
-"""SDK-derived typed views over the internal mutable XML editor.
-
-All nominal element classes and typed properties below come from the same imported
-metadata used by the native validator. Stable views share one native XML state.
-"""
+"""Thin Python views and nominal classes over the native XML and schema model."""
 import json
 import re
 from enum import Enum
-from functools import cache
 from types import MappingProxyType, SimpleNamespace
 from fastcore.xml import XML as _Expression
 from . import _core
 
-metadata = json.loads(_core.metadata_json())
-namespaces = {prefix: SimpleNamespace() for prefix in metadata['namespaces']}
+namespace_uris = _core.namespace_bindings()
+namespaces = {prefix: SimpleNamespace() for prefix in namespace_uris}
 types, enums = {}, {}
 
 def _snake(name): return re.sub(r'(?<!^)(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])', '_', name).lower()
-
-def _expanded(qname):
-    prefix, _, local = qname.rpartition(':')
-    return metadata['namespaces'].get(prefix, ''), local
-
-def _particle_slots(particle):
-    if 'Name' in particle: return [{_expanded(particle['Name'].rsplit('/', 1)[-1])}], set()
-    parts = [_particle_slots(p) for p in particle.get('Items', [])]
-    slots = [slot for groups, _ in parts for slot in groups]
-    names = set().union(*slots)
-    ambiguous = set().union(*(a for _, a in parts))
-    kind = particle.get('Kind')
-    if kind in ('Choice', 'All'):
-        for groups, _ in parts:
-            if len(groups) > 1: ambiguous.update(set().union(*groups))
-        slots = [names]
-    elif kind not in ('Sequence', 'Group'): return [{None}], names
-    if len(slots) > 1 and any(o.get('Max', 2) > 1 for o in particle.get('Occurs', [])):
-        ambiguous.update(names)
-        slots = [names]
-    return slots, ambiguous
-
-@cache
-def _child_order(type_id):
-    particle = metadata['types'].get(type_id, {}).get('particle')
-    if not particle: return {}
-    slots, ambiguous = _particle_slots(particle)
-    order = {}
-    for rank, names in enumerate(slots):
-        if None in names: return {}
-        for name in names:
-            if name in order: ambiguous.add(name)
-            order[name] = rank
-    return {name: rank for name, rank in order.items() if name not in ambiguous}
-
-def _position(parent, qname):
-    "Find a schema-order slot without reordering existing XML children."
-    order = _child_order(parent.type_id)
-    if qname not in order: raise ValueError(f'No unambiguous schema position for {qname}; supply index=')
-    ids = parent._tree.xml.children(parent.node_id)
-    index, previous = len(ids), -1
-    for child in parent.children:
-        rank = order.get(child.qname)
-        if rank is None or rank < previous: raise ValueError('Existing children have unclear schema order; supply index=')
-        if rank > order[qname] and index == len(ids): index = ids.index(child.node_id)
-        previous = rank
-    return index
-
-def _walk(element):
-    yield element
-    for child in element.children: yield from _walk(child)
-
-def _one(items, description):
-    items = list(items)
-    if len(items) > 1: raise ValueError(f'Ambiguous {description}')
-    return items[0] if items else None
-
-def _choose_prefix(bindings, uri, preferred):
-    chosen = next((p for p, value in bindings.items() if p and value == uri), preferred)
-    while chosen in bindings and bindings[chosen] != uri: chosen += '_'
-    return chosen
 
 def _freeze(value):
     if isinstance(value, dict): return MappingProxyType({k: _freeze(v) for k, v in value.items()})
@@ -84,162 +18,119 @@ def _freeze(value):
     return value
 
 class Element:
-    """A contextual typed view over a stable native element identity."""
-    __slots__ = ('_tree', '_id', '_checked_revision')
+    "A nominal view of a native element; all views share the native tree's state."
+    __slots__ = ('_tree', '_id')
     type_id = None
 
-    def __init__(self, tree, node_id): self._tree, self._id, self._checked_revision = tree, node_id, None
-
-    def _check(self):
-        revision = self._tree.xml.revision
-        if self._checked_revision == revision: return
-        if self.type_id != _core.element_type(self._tree.xml, self._id):
-            raise ReferenceError('XML element type changed; reacquire its typed view')
-        self._checked_revision = revision
+    def __init__(self, tree, node_id): self._tree, self._id = tree, node_id
 
     @property
     def node_id(self):
-        self._check()
+        _core.check_element_type(self._tree.xml, self._id, self.type_id)
         return self._id
 
     @property
-    def raw(self):
-        self._check()
-        return _freeze(json.loads(self._tree.xml.node(self._id)))
-
+    def raw(self): return _freeze(json.loads(self._tree.xml.node(self.node_id)))
     @property
     def qname(self): return self._tree.xml.qname(self.node_id)
-
     @property
     def children(self): return [self._tree._element(i) for i in self._tree.xml.element_children(self.node_id)]
-
     @property
     def parent(self):
         parent = self._tree.xml.parent(self.node_id)
         return None if parent is None else self._tree._element(parent)
-
     @property
-    def text(self): return self.raw['text']
+    def text(self): return self._tree.xml.text(self.node_id)
 
     def attribute(self, uri, local): return self._tree.xml.attribute(self.node_id, uri, local)
-
-    def set_attribute(self, uri, local, value):
-        self._check()
-        self._tree.xml.set_attribute(self._id, uri, local, value)
-
+    def set_attribute(self, uri, local, value): self._tree.xml.set_attribute(self.node_id, uri, local, value)
     def remove_attribute(self, uri, local): self._tree.xml.remove_attribute(self.node_id, uri, local)
 
     def insert_xml(self, index, data):
-        ids = self._tree.xml.insert_xml(self.node_id, index, data)
-        return [self._tree._element(i) for i in ids if json.loads(self._tree.xml.node(i))['kind'] == 'element']
+        return self._tree._elements(self._tree.xml.insert_xml(self.node_id, index, data))
 
     def append_xml(self, data): return self.insert_xml(self._tree.xml.child_count(self.node_id), data)
 
     def __call__(self, expression, *, index=None):
-        "Attach one detached expression and return its live view; use schema order unless index is explicit."
-        self._check()
-        if not isinstance(expression, _Expression):
-            raise TypeError('Attach a detached XML expression; use copy_to or move_to for live elements')
+        "Attach one detached expression; native schema order is used unless index is explicit."
+        if not isinstance(expression, _Expression): raise TypeError('Attach an XML expression; use copy_to or move_to for live elements')
         if index is None:
             prefix, _, local = expression.tag.rpartition(':')
-            index = _position(self, (expression.ns.get(prefix, ''), local))
+            index = _core.child_position(self._tree.xml, self.node_id, expression.ns.get(prefix, ''), local)
         element, = self.insert_xml(index, expression.bytes())
         return element
 
     def delete(self): self._tree.xml.delete(self.node_id)
-
-    def replace(self, data):
-        ids = self._tree.xml.replace_node(self.node_id, data)
-        return [self._tree._element(i) for i in ids if json.loads(self._tree.xml.node(i))['kind'] == 'element']
+    def replace(self, data): return self._tree._elements(self._tree.xml.replace_node(self.node_id, data))
 
     def move_to(self, parent, index):
-        if parent._tree is not self._tree: raise ValueError('Cross-part movement is not supported')
-        self._tree.xml.move_node(self.node_id, parent.node_id, index)
+        self._tree.xml.move_to(self.node_id, parent._tree.xml, parent.node_id, index)
 
     def copy_to(self, parent, index=None):
-        """Copy XML only; package relationships and document-wide IDs are not remapped."""
+        "Copy XML, without remapping package relationships or document-wide IDs."
         if index is None: index = parent._tree.xml.child_count(parent.node_id)
-        if parent._tree is not self._tree:
-            copied, = parent.insert_xml(index, self._tree.xml.subtree_bytes(self.node_id))
-            return copied
-        return self._tree._element(self._tree.xml.copy(self.node_id, parent.node_id, index))
+        return parent._tree._element(self._tree.xml.copy_to(self.node_id, parent._tree.xml, parent.node_id, index))
 
     def __repr__(self): return f'{type(self).__name__}(id={self._id})'
 
+
 def _value_property():
-    def get(self) -> str: return self.text
-    def set(self, value: str):
-        if not isinstance(value, str): raise TypeError('text value requires str')
-        self._check()
-        self._tree.xml.set_text(self._id, value)
+    def get(self): return self.text
+    def set(self, value): self._tree.xml.set_text(self.node_id, value)
     return property(get, set)
 
-def _property(attr, value_type):
-    uri, local = _expanded(attr['QName'])
+
+def _property(name, value_type):
     def get(self):
-        value = self.attribute(uri, local)
+        value = _core.typed_attribute(self._tree.xml, self._id, self.type_id, name)
         if value is None: return None
-        check = json.loads(_core.check_attribute(self.type_id, attr['PropertyName'], value))
-        if check['errors']: raise ValueError(f'{type(self).__name__}.{attr["PropertyName"]}: {value!r}: {check["errors"]}')
-        if value_type is bool: return check['value']
-        return value_type(value)
+        return value == 'true' if value_type is bool else value_type(value)
     def set(self, value):
         if not isinstance(value, value_type) or value_type is int and isinstance(value, bool): raise TypeError(f'expected {value_type.__name__}')
         lexical = value.value if isinstance(value, Enum) else ('true' if value else 'false') if value_type is bool else str(value)
-        check = json.loads(_core.check_attribute(self.type_id, attr['PropertyName'], lexical))
-        if check['errors']: raise ValueError(f'{attr["PropertyName"]}: {check["errors"]}')
-        if check['gaps']: raise NotImplementedError(f'Unchecked setter constraints: {check["gaps"]}')
-        self.set_attribute(uri, local, lexical)
-    get.__annotations__ = {'return': value_type | None}
-    set.__annotations__ = {'value': value_type, 'return': None}
-    return property(get, set, doc=attr.get('PropertyComments', attr['QName']))
+        _core.set_typed_attribute(self._tree.xml, self._id, self.type_id, name, lexical)
+    return property(get, set)
 
-def _attribute_type(attr):
-    kind = attr['Type']
+
+def _attribute_type(kind):
     if kind in ('BooleanValue', 'OnOffValue'): return bool
     if kind in ('Int16Value', 'Int32Value', 'Int64Value', 'IntegerValue', 'UInt16Value', 'UInt32Value', 'UInt64Value', 'ByteValue', 'SByteValue'): return int
     if kind.startswith('EnumValue<'): return enums[kind[len('EnumValue<'):-1]]
     return str
 
-for _id, _enum in metadata['enums'].items():
-    _members = {f.get('Name') or f['Value']: f['Value'] for f in _enum['Facets']}
-    _cls = Enum(_enum['Name'], _members, type=str)
-    enums[_enum['full_name']] = _cls
-    _prefix = _enum['Type'].split(':')[0]
-    if _prefix in namespaces: setattr(namespaces[_prefix], _enum['Name'], _cls)
+for _full_name, _prefix, _name, _members in _core.facade_enums():
+    _cls = enums[_full_name] = Enum(_name, dict(_members), type=str)
+    if _prefix in namespaces: setattr(namespaces[_prefix], _name, _cls)
 
-for _id, _type in metadata['types'].items():
-    if _type['is_abstract']: continue
-    _attrs = {_snake(a['PropertyName']): _property(a, _attribute_type(a)) for a in _type['attributes']}
-    _attrs.update(type_id=_id, __module__=__name__, __slots__=(),
-                  __annotations__={_snake(a['PropertyName']): _attribute_type(a) | None for a in _type['attributes']})
-    if _type['is_text']: _attrs['value'] = _value_property()
-    _cls = types[_id] = type(_type['class_name'], (Element,), _attrs)
-    _prefix = _id.rsplit('/', 1)[-1].split(':')[0]
-    if _prefix in namespaces: setattr(namespaces[_prefix], _type['class_name'], _cls)
+for _id, _prefix, _name, _is_text, _properties in _core.facade_types():
+    _attrs = {_snake(name): _property(name, _attribute_type(kind)) for name, kind in _properties}
+    _attrs.update(type_id=_id, __module__=__name__, __slots__=())
+    if _is_text: _attrs['value'] = _value_property()
+    _cls = types[_id] = type(_name, (Element,), _attrs)
+    if _prefix in namespaces: setattr(namespaces[_prefix], _name, _cls)
 
 w = namespaces['w']
 
 class Tree:
-    """A mutable XML part. Raw edits and typed views share the native `xml` editor."""
-    def __init__(self, data: bytes):
-        self.xml = _core.Xml(data)
+    "A Python view of one native XML tree, standalone or owned by a package."
+    def __init__(self, data: bytes): self.xml = _core.Xml(data)
 
-    def _element(self, index):
-        element = types.get(_core.element_type(self.xml, index), Element)(self, index)
-        element._checked_revision = self.xml.revision
-        return element
+    @classmethod
+    def _from_native(cls, xml):
+        tree = cls.__new__(cls)
+        tree.xml = xml
+        return tree
 
+    def _element(self, index): return types.get(_core.element_type(self.xml, index), Element)(self, index)
+    def _elements(self, ids): return [self._element(i) for i in ids if self.xml.is_element(i)]
     @property
     def root(self): return self._element(self.xml.root)
 
     def elements(self, cls=Element):
-        for index in self.xml.element_ids():
-            element = self._element(index)
-            if isinstance(element, cls): yield element
+        ids = self.xml.element_ids() if cls is Element else _core.elements_of_type(self.xml, cls.type_id)
+        return (self._element(i) for i in ids)
 
     def validate(self, target='Microsoft365', dependencies=None, part_uri='', *, relationships=None, complete_dependencies=False):
-        """Validate with optional part-name → live Tree dependencies."""
         native = {name: tree.xml for name, tree in (dependencies or {}).items()}
         report = json.loads(_core.analyze(self.xml, target, native, relationships, complete_dependencies))
         for issue in report['issues']: issue.update(part_uri=part_uri, target=target)

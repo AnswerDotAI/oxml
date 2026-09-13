@@ -1,12 +1,14 @@
 """M0 fixture workflows. Invalid variants are made in tests from unchanged original DOCX files."""
 from pathlib import Path
+import json
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 import pytest
 from oxml import Tree, w, namespaces, _core
-from oxml.model import types, metadata
+from oxml.model import types
 
 FIXTURES = Path(__file__).parent/'fixtures'
+metadata = json.loads((Path(__file__).parents[1]/'schema/metadata.json').read_text())
 W = metadata['namespaces']['w']
 
 def part(path, name='word/document.xml'):

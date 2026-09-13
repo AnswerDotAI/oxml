@@ -1,6 +1,7 @@
 //! SDK descriptor interpreter. Unsupported mechanisms are reported, never treated as successful checks.
 use crate::xml::{Document, Node, NodeKind, Xml};
-use pyo3::{exceptions::PyValueError, prelude::*};
+use crate::error::{Error, Result};
+use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -9,12 +10,15 @@ const DATA: &str = include_str!("../schema/metadata.json");
 const MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const VERSIONS: [&str; 7] = ["Office2007", "Office2010", "Office2013", "Office2016", "Office2019", "Office2021", "Microsoft365"];
 static SCHEMA: OnceLock<Value> = OnceLock::new();
-fn schema() -> &'static Value { SCHEMA.get_or_init(|| serde_json::from_str(DATA).expect("generated schema JSON")) }
-fn s(v: &Value) -> &str { v.as_str().unwrap_or("") }
-fn arr(v: &Value) -> &[Value] { v.as_array().map(Vec::as_slice).unwrap_or(&[]) }
+pub(crate) fn schema() -> &'static Value { SCHEMA.get_or_init(|| serde_json::from_str(DATA).expect("generated schema JSON")) }
+pub(crate) fn s(v: &Value) -> &str { v.as_str().unwrap_or("") }
+pub(crate) fn arr(v: &Value) -> &[Value] { v.as_array().map(Vec::as_slice).unwrap_or(&[]) }
 fn rank(v: &str) -> Option<u8> { if v.is_empty() { Some(0) } else { VERSIONS.iter().position(|version| *version == v).map(|i| i as u8) } }
-fn available(v: &str, target: &str) -> bool { matches!((rank(v), rank(target)), (Some(a), Some(b)) if a <= b) }
-fn expanded(q: &str) -> (&str, &str) {
+pub(crate) fn available(v: &str, target: &str) -> bool { matches!((rank(v), rank(target)), (Some(a), Some(b)) if a <= b) }
+pub fn check_target(target: &str) -> Result<()> {
+    if VERSIONS.contains(&target) { Ok(()) } else { Err(Error::Invalid("unknown validation target".into())) }
+}
+pub(crate) fn expanded(q: &str) -> (&str, &str) {
     let (prefix, local) = q.split_once(':').unwrap_or(("", q));
     (s(&schema()["namespaces"][prefix]), local)
 }
@@ -39,7 +43,33 @@ fn issue(rule: &str, category: &str, node: usize, expected: impl Into<Value>, ac
 }
 
 #[pyfunction]
-pub fn metadata_json() -> &'static str { DATA }
+pub fn namespace_bindings() -> HashMap<&'static str, &'static str> {
+    schema()["namespaces"].as_object().unwrap().iter().map(|(k, v)| (k.as_str(), s(v))).collect()
+}
+
+type FacadeEnum = (&'static str, &'static str, &'static str, Vec<(&'static str, &'static str)>);
+type FacadeAttribute = (&'static str, &'static str);
+type FacadeType = (&'static str, &'static str, &'static str, bool, Vec<FacadeAttribute>);
+
+#[pyfunction]
+pub fn facade_enums() -> Vec<FacadeEnum> {
+    schema()["enums"].as_object().unwrap().values().map(|e| {
+        let prefix = s(&e["Type"]).split(':').next().unwrap_or("");
+        let members = arr(&e["Facets"]).iter().map(|f| {
+            (f["Name"].as_str().filter(|n| !n.is_empty()).unwrap_or(s(&f["Value"])), s(&f["Value"]))
+        }).collect();
+        (s(&e["full_name"]), prefix, s(&e["Name"]), members)
+    }).collect()
+}
+
+#[pyfunction]
+pub fn facade_types() -> Vec<FacadeType> {
+    schema()["types"].as_object().unwrap().iter().filter(|(_, t)| !t["is_abstract"].as_bool().unwrap_or(false)).map(|(id, t)| {
+        let prefix = qname(id).split(':').next().unwrap_or("");
+        let attrs = arr(&t["attributes"]).iter().map(|a| (s(&a["PropertyName"]), s(&a["Type"]))).collect();
+        (id.as_str(), prefix, s(&t["class_name"]), t["is_text"].as_bool().unwrap_or(false), attrs)
+    }).collect()
+}
 
 type QName = (&'static str, &'static str);
 
@@ -52,6 +82,7 @@ struct SchemaIndex {
     namespace_versions: HashMap<&'static str, u8>,
     enums: HashMap<&'static str, &'static Value>,
     particles: HashMap<&'static str, Particle>,
+    child_order: HashMap<&'static str, HashMap<QName, usize>>,
 }
 
 fn schema_index() -> &'static SchemaIndex {
@@ -66,12 +97,19 @@ fn schema_index() -> &'static SchemaIndex {
             if !t["is_abstract"].as_bool().unwrap_or(false) { index.roots.entry(name).and_modify(|v| *v = None).or_insert(Some(id)); }
             let children = index.children.entry(id).or_default();
             for child in arr(&t["children"]).iter().map(s) { children.entry(expanded(qname(child))).and_modify(|v| *v = None).or_insert(Some(child)); }
-            if !t["particle"].is_null() { index.particles.insert(id, Particle::compile(&t["particle"])); }
+            if !t["particle"].is_null() {
+                index.particles.insert(id, Particle::compile(&t["particle"]));
+                index.child_order.insert(id, child_order(&t["particle"]));
+            }
         }
         for (i, rule) in arr(&schema()["semantics"]).iter().enumerate() { index.semantics.entry(expanded(s(&rule["Context"]))).or_default().push((i, rule)); }
         for definition in schema()["enums"].as_object().unwrap().values() { index.enums.insert(s(&definition["full_name"]), definition); }
         index
     })
+}
+
+pub fn enum_contains(full_name: &str, value: &str) -> bool {
+    schema_index().enums.get(full_name).is_some_and(|e| arr(&e["Facets"]).iter().any(|f| s(&f["Value"]) == value))
 }
 
 fn resolve(n: &Node, parent: Option<&str>) -> Option<&'static str> {
@@ -81,15 +119,95 @@ fn resolve(n: &Node, parent: Option<&str>) -> Option<&'static str> {
     choices.get(&(name.uri.as_str(), name.local.as_str())).copied().flatten()
 }
 
-#[pyfunction]
-pub fn element_type(xml: &Xml, id: usize) -> PyResult<Option<&'static str>> {
-    let doc = xml.read()?;
-    if doc.node(id)?.element().is_none() { return Err(PyValueError::new_err("Expected an XML element")); }
+pub fn document_type(doc: &Document, id: usize) -> Result<Option<&'static str>> {
+    if doc.node(id)?.element().is_none() { return Err(Error::Invalid("Expected an XML element".into())); }
     let mut path = ancestors(doc, id).collect::<Vec<_>>();
     path.reverse();
     let mut context = None;
     for node in path { if node.element().unwrap().name.uri != MC { context = resolve(node, context.as_deref()); } }
     Ok(if doc.node(id)?.element().unwrap().name.uri == MC { None } else { context })
+}
+
+#[pyfunction]
+pub fn element_type(xml: &Xml, id: usize) -> Result<Option<&'static str>> { document_type(&*xml.read()?, id) }
+
+pub fn check_type(doc: &Document, id: usize, expected: Option<&str>) -> Result<()> {
+    if document_type(doc, id)? != expected { return Err(Error::Stale("XML element type changed; reacquire its typed view".into())); }
+    Ok(())
+}
+
+#[pyfunction]
+pub fn check_element_type(xml: &Xml, id: usize, expected: Option<&str>) -> Result<()> { check_type(&*xml.read()?, id, expected) }
+
+#[pyfunction]
+#[pyo3(signature=(xml, type_id=None))]
+pub fn elements_of_type(xml: &Xml, type_id: Option<&str>) -> Result<Vec<usize>> {
+    let doc = xml.read()?;
+    if type_id.is_none() { return Ok(doc.element_ids()); }
+    doc.element_ids().into_iter().filter_map(|id| match document_type(&doc, id) {
+        Ok(actual) if actual == type_id => Some(Ok(id)),
+        Err(error) => Some(Err(error)),
+        _ => None,
+    }).collect()
+}
+
+fn particle_slots(p: &'static Value) -> (Vec<HashSet<QName>>, HashSet<QName>, bool) {
+    if let Some(name) = p["Name"].as_str() { return (vec![HashSet::from([expanded(qname(name))])], HashSet::new(), false); }
+    let mut slots = Vec::new();
+    let mut ambiguous = HashSet::new();
+    let mut unknown = false;
+    let unordered = matches!(s(&p["Kind"]), "Choice" | "All");
+    for item in arr(&p["Items"]) {
+        let (groups, names, wildcard) = particle_slots(item);
+        ambiguous.extend(names);
+        unknown |= wildcard;
+        if unordered && groups.len() > 1 { ambiguous.extend(groups.iter().flatten().copied()); }
+        slots.extend(groups);
+    }
+    let names: HashSet<_> = slots.iter().flatten().copied().collect();
+    if unordered { slots = vec![names.clone()]; }
+    else if !matches!(s(&p["Kind"]), "Sequence" | "Group") { unknown = true; }
+    if slots.len() > 1 && arr(&p["Occurs"]).iter().any(|o| o["Max"].as_u64().is_none_or(|max| max == 0 || max > 1)) {
+        ambiguous.extend(&names);
+        slots = vec![names];
+    }
+    (slots, ambiguous, unknown)
+}
+
+fn child_order(p: &'static Value) -> HashMap<QName, usize> {
+    let (slots, mut ambiguous, unknown) = particle_slots(p);
+    let mut order = HashMap::new();
+    if unknown { return order; }
+    for (rank, names) in slots.into_iter().enumerate() {
+        for name in names { if order.insert(name, rank).is_some() { ambiguous.insert(name); } }
+    }
+    order.retain(|name, _| !ambiguous.contains(name));
+    order
+}
+
+pub fn insertion_position(doc: &Document, parent: usize, uri: &str, local: &str) -> Result<usize> {
+    let order = document_type(doc, parent)?.and_then(|id| schema_index().child_order.get(id));
+    let Some((order, &rank)) = order.and_then(|order| order.get(&(uri, local)).map(|rank| (order, rank))) else {
+        return Err(Error::Invalid(format!("No unambiguous schema position for {{{uri}}}{local}; supply index=")));
+    };
+    let children = &doc.node(parent)?.children;
+    let mut position = children.len();
+    let mut previous = None;
+    for (index, &id) in children.iter().enumerate() {
+        let Some(e) = doc.node(id)?.element() else { continue; };
+        let next = order.get(&(e.name.uri.as_str(), e.name.local.as_str())).copied();
+        if next.is_none() || previous.is_some_and(|p| next.unwrap() < p) {
+            return Err(Error::Invalid("Existing children have unclear schema order; supply index=".into()));
+        }
+        if next.unwrap() > rank && position == children.len() { position = index; }
+        previous = next;
+    }
+    Ok(position)
+}
+
+#[pyfunction]
+pub fn child_position(xml: &Xml, parent: usize, uri: &str, local: &str) -> Result<usize> {
+    insertion_position(&*xml.read()?, parent, uri, local)
 }
 
 fn pattern(pattern: &str, value: &str, gaps: &mut BTreeSet<String>) -> bool {
@@ -318,14 +436,38 @@ fn check_attr(a: &Value, value: Option<&str>, target: &str, gaps: &mut BTreeSet<
     errors
 }
 
-#[pyfunction]
-#[pyo3(signature=(type_id, property, value, target="Microsoft365"))]
-pub fn check_attribute(type_id: &str, property: &str, value: Option<&str>, target: &str) -> PyResult<String> {
+fn typed_descriptor(type_id: &str, property: &str) -> Result<&'static Value> {
     let attrs = arr(&schema()["types"][type_id]["attributes"]);
-    let a = attrs.iter().find(|a| s(&a["PropertyName"]) == property).ok_or_else(|| PyValueError::new_err("unknown typed attribute"))?;
+    attrs.iter().find(|a| s(&a["PropertyName"]) == property).ok_or_else(|| Error::Invalid("unknown typed attribute".into()))
+}
+
+fn checked_attribute(a: &Value, property: &str, value: &str, writing: bool) -> Result<()> {
     let mut gaps = BTreeSet::new();
-    let errors = check_attr(a, value, target, &mut gaps);
-    Ok(json!({"errors":errors,"gaps":gaps,"value":value.and_then(|v| boolean(s(&a["Type"]),v))}).to_string())
+    let errors = check_attr(a, Some(value), "Microsoft365", &mut gaps);
+    if !errors.is_empty() { return Err(Error::Invalid(format!("{property}: {value:?}: {}", errors.join(", ")))); }
+    if writing && !gaps.is_empty() { return Err(Error::Unsupported(format!("Unchecked setter constraints: {}", gaps.into_iter().collect::<Vec<_>>().join(", ")))); }
+    Ok(())
+}
+
+#[pyfunction]
+pub fn typed_attribute(xml: &Xml, id: usize, type_id: &str, property: &str) -> Result<Option<String>> {
+    let doc = xml.read()?;
+    check_type(&doc, id, Some(type_id))?;
+    let a = typed_descriptor(type_id, property)?;
+    let Some(value) = attribute(doc.node(id)?, s(&a["QName"])) else { return Ok(None); };
+    checked_attribute(a, property, value, false)?;
+    Ok(Some(match boolean(s(&a["Type"]), value) { Some(true) => "true", Some(false) => "false", None => value }.into()))
+}
+
+#[pyfunction]
+pub fn set_typed_attribute(xml: &Xml, id: usize, type_id: &str, property: &str, value: &str) -> Result<()> {
+    let a = typed_descriptor(type_id, property)?;
+    checked_attribute(a, property, value, true)?;
+    let (uri, local) = expanded(s(&a["QName"]));
+    xml.edit(|doc| {
+        check_type(doc, id, Some(type_id))?;
+        doc.set_attribute(id, uri, local, value, None)
+    })
 }
 
 fn particle_occurs(p: &Value, target: &str) -> Option<(usize, usize)> {
@@ -671,26 +813,21 @@ fn semantic(rule: &'static Value, n: &Node, context: &mut SemanticContext<'_>, g
     Some(values.contains(value))
 }
 
-#[pyfunction]
-#[pyo3(signature=(xml, target="Microsoft365", dependencies=None, relationships=None, complete_dependencies=false))]
-pub fn analyze(
-    xml: &Xml,
+pub fn analyze_document(
+    doc: &Document,
     target: &str,
-    dependencies: Option<HashMap<String, PyRef<'_, Xml>>>,
-    relationships: Option<HashMap<String, String>>,
+    dependencies: &HashMap<String, &Document>,
+    relationships: Option<&HashMap<String, String>>,
     complete_dependencies: bool,
-) -> PyResult<String> {
-    if rank(target).is_none() { return Err(PyValueError::new_err("unknown validation target")); }
-    let doc = xml.read()?;
-    let dependencies = dependencies.unwrap_or_default();
-    let deps = dependencies.iter().map(|(name, xml)| Ok((name.clone(), xml.read()?))).collect::<PyResult<_>>()?;
+) -> Result<Value> {
+    check_target(target)?;
     let mut issues = Vec::new();
     let mut gaps = BTreeSet::new();
     let mut skipped = Vec::new();
     let mut semantic_context = SemanticContext {
         doc,
-        dependencies: &deps,
-        relationships: relationships.as_ref(),
+        dependencies,
+        relationships,
         complete_dependencies,
         target,
         duplicates: HashMap::new(),
@@ -774,6 +911,24 @@ pub fn analyze(
         }
     }
     Ok(json!({"issues":issues,"target":target,"source":schema()["source"],"coverage":{"schema_nodes_checked":checked,
-        "semantic_checks":semantic_checked,"gaps":gaps,"skipped_regions":skipped,"complete":false}})
-    .to_string())
+        "semantic_checks":semantic_checked,"gaps":gaps,"skipped_regions":skipped,"complete":false}}))
+}
+
+pub fn analyze_tree(
+    xml: &Xml, target: &str, dependencies: &HashMap<String, Xml>, relationships: Option<&HashMap<String, String>>, complete_dependencies: bool,
+) -> Result<Value> {
+    let doc = xml.read()?;
+    let guards = dependencies.iter().map(|(name, xml)| Ok((name, xml.read()?))).collect::<Result<Vec<_>>>()?;
+    let deps = guards.iter().map(|(name, doc)| ((*name).clone(), &**doc)).collect();
+    analyze_document(&doc, target, &deps, relationships, complete_dependencies)
+}
+
+#[pyfunction]
+#[pyo3(signature=(xml, target="Microsoft365", dependencies=None, relationships=None, complete_dependencies=false))]
+pub fn analyze(
+    py: Python<'_>, xml: &Xml, target: &str, dependencies: Option<HashMap<String, PyRef<'_, Xml>>>,
+    relationships: Option<HashMap<String, String>>, complete_dependencies: bool,
+) -> Result<String> {
+    let deps = dependencies.unwrap_or_default().into_iter().map(|(name, xml)| (name, (*xml).clone())).collect();
+    py.detach(|| analyze_tree(xml, target, &deps, relationships.as_ref(), complete_dependencies).map(|report| report.to_string()))
 }

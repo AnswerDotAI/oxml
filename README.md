@@ -1,6 +1,6 @@
 # oxml
 
-Create and edit Word DOCX files from Python, including text, tables, comments and tracked changes. oxml uses a Rust XML editor and types derived from Microsoft's Open XML SDK. It requires neither .NET nor Office.
+Create and edit Word DOCX files from Python, including text, tables, comments and tracked changes. oxml is a Rust document library with thin Python bindings and types derived from Microsoft's Open XML SDK. It requires neither .NET nor Office.
 
 ## Edit a document
 

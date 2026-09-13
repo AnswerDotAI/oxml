@@ -51,6 +51,9 @@ def test_multilevel_definition_continuation_and_new_instance_restart():
         with pytest.raises(ValueError): operation()
         assert doc.bytes() == before
         duplicate.delete()
+    sublevel_restart = restarted.restart(start=7, level=1)
+    overrides = ET.fromstring(sublevel_restart.element._tree.xml.subtree_bytes(sublevel_restart.element.node_id)).findall(W+'lvlOverride')
+    assert {e.get(W+'ilvl'): e.find(W+'startOverride').get(W+'val') for e in overrides} == {'0': '4', '1': '7'}
     instance.element.set_attribute(W[1:-1], 'numId', 'invalid')
     before = doc.bytes()
     with pytest.raises(ValueError): instance.apply(paragraphs[0], level=1)
