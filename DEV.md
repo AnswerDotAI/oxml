@@ -41,6 +41,8 @@ Python module paths are relative to `python/oxml/`.
 
 Children can be expressions, parsed `Element` views, strings or ordered collections. `None` children are omitted. Parsed children capture namespace-complete snapshots at construction that survive later source edits or invalidation. Raw XML bytes must be parsed before use as children.
 
+Calling a detached expression, such as `props(e.b(), e.i())`, appends children and returns that same expression for chaining. It uses the same child handling as construction, including snapshots of live elements taken when they are added. This differs from calling a live parent, which attaches a child in schema order and returns the attached child.
+
 Factories resolve names at construction and each expression retains its own bindings. `ns` supplies custom and default namespace bindings, including prefixes used inside opaque attribute values. Keyword attributes use `attr_ns`. `prefix__name` selects an explicit prefix and `attrs_` accepts literal names. A trailing underscore escapes Python keywords, as in `e.del_()`.
 
 Factory attributes are serialized as XML text values. Booleans become `true` or `false`, and `None` attributes are omitted. Construction checks XML names, namespaces and characters. `.bytes()` serializes the expression without adding formatting whitespace.

@@ -56,12 +56,13 @@ def test_nested_paragraph_table_construction_and_docx_roundtrip():
                                      r__id='rId9', attrs_={'kind': 'q:Type'}), index=0)
     original = source.bytes()
     destination_e = E('w', attr_ns='w', ns={'': 'urn:destination', 'q': 'urn:conflict'})
-    paragraph = destination_e.p(e.pPr(e.jc(val='center')), imported)
+    paragraph = destination_e.p(e.pPr(e.jc(val='center')))
+    paragraph(imported)
     assert source.bytes() == original
     next(source.main.xml.elements(w.Text)).value = 'changed after snapshot'
     imported.delete()
     source.main.replace(b'<root/>')
-    with pytest.raises(ReferenceError): e.p(imported)
+    with pytest.raises(ReferenceError): paragraph(imported)
     table = e.tbl(e.tblPr(), e.tblGrid(e.gridCol(w=2000) for _ in range(2)),
                   (e.tr(e.tc(e.p(e.r(e.t(value)))) for value in row) for row in [('A', 'B'), ('C', 'D')]))
     assert tree.xml.revision == revision
