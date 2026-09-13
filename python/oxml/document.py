@@ -198,6 +198,35 @@ class Document:
 
     def save(self, path): self.package.save(path)
 
+    def set_custom_xml(self, item_id, data, *, schema_uri=None):
+        """Set a datastore's XML bytes by GUID, creating it when absent; return its Part.
+
+        Existing properties and unrelated stores are retained. `schema_uri` is used only on creation.
+        """
+        from .build import E
+        package, main = self.package, self.main.uri
+        item_info, props_info = metadata['parts']['CustomXmlPart'], metadata['parts']['CustomXmlPropertiesPart']
+        item_id = item_id.upper()
+        for rel in package.relationships(main):
+            if rel['type'] != item_info['RelationshipType'] or rel['target_mode'] == 'External': continue
+            item = package.relationship_part(main, rel['id'])
+            for rel in package.relationships(item):
+                if rel['type'] != props_info['RelationshipType'] or rel['target_mode'] == 'External': continue
+                props = package.part(package.relationship_part(item, rel['id'])).xml.root
+                if (props.attribute(metadata['namespaces']['ds'], 'itemID') or '').upper() == item_id:
+                    return package.replace_part(item, data)
+        names, n = {p.lower() for p in package.part_names()}, 1
+        while f'/customxml/item{n}.xml' in names or f'/customxml/itemprops{n}.xml' in names: n += 1
+        item, props = f'/customXml/item{n}.xml', f'/customXml/itemProps{n}.xml'
+        ds = E('ds', attr_ns='ds')
+        properties = ds.datastoreItem(
+            ds.schemaRefs(ds.schemaRef(uri=schema_uri)) if schema_uri is not None else None, itemID=item_id).bytes()
+        part = package.add_part(item, 'application/xml', data)
+        package.add_part(props, props_info['ContentType'], properties)
+        package.add_relationship(item, props_info['RelationshipType'], props)
+        package.add_relationship(main, item_info['RelationshipType'], item)
+        return part
+
     def _part(self, name, create=False):
         """Find or create one declared XML part related directly to the main document."""
         from .build import E

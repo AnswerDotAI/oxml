@@ -78,6 +78,8 @@ Editing inside an existing revision requires accepting or rejecting it first. Ta
 
 These helpers edit the document's XML. They do not calculate layout, inherited formatting, displayed list numbers or field results. Usage details are in [Document helpers](DEV.md#document-helpers).
 
+`doc.set_custom_xml(item_id, xml_bytes, schema_uri=...)` creates or replaces a custom XML datastore by GUID and returns its `Part`. It manages the property part and relationships while preserving unrelated stores. Content controls can refer to the GUID through `w:storeItemID`.
+
 ## Compare and import documents
 
 Compare two documents to produce a new document with tracked text and direct-formatting changes:

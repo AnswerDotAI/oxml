@@ -132,6 +132,8 @@ Author/date metadata is explicit. Dates default to UTC and supplied dates must b
 
 Style inheritance, displayed list counters, field evaluation and layout are left to the application reading the document.
 
+`doc.set_custom_xml(item_id, data, schema_uri=None)` writes XML bytes to a main-document custom XML datastore, matching its GUID case-insensitively, and returns its `Part`. A matching store retains its property part unchanged; `schema_uri` only supplies the schema reference for a new store. Creation allocates non-colliding item and property part names and links both parts. Unrelated stores remain untouched. This does not create content controls or interpret the payload.
+
 ## Import and compare
 
 `import_content` copies selected paragraphs and tables with their explicit style, numbering, image and hyperlink dependencies:

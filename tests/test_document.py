@@ -4,6 +4,7 @@ from zipfile import ZipFile
 from io import BytesIO
 import pytest
 from oxml import Document, Tree, w
+from corpus_helpers import parts
 
 FIXTURES = Path(__file__).parent/'fixtures'
 
@@ -96,6 +97,30 @@ def test_equivalent_part_names_share_xml_state_and_invalidation():
     with pytest.raises(ReferenceError): _ = root.raw
     with pytest.raises(ReferenceError): alias.read_bytes()
     assert replacement.uri == main.uri
+
+@pytest.mark.parametrize('occupied', ['/CUSTOMXML/ITEM1.XML', '/CUSTOMXML/ITEMPROPS1.XML'])
+def test_set_custom_xml_preserves_other_stores_and_reuses_id(occupied):
+    doc = Document.new()
+    doc.package.add_part(occupied, 'application/xml', b'<keep/>')
+    item_id = '{8E2C9A44-7D31-4E5B-9C0D-1A6F2B3C4D5E}'
+    item = doc.set_custom_xml(item_id, b'<fields xmlns="urn:fields"/>', schema_uri='urn:fields')
+    doc.set_custom_xml('{11111111-2222-3333-4444-555555555555}', b'<other/>')
+    rel, = doc.package.relationships(item.uri)
+    props = doc.package.part(doc.package.relationship_part(item.uri, rel['id'])).xml.root
+    ds = 'http://schemas.openxmlformats.org/officeDocument/2006/customXml'
+    assert props.attribute(ds, 'itemID') == item_id
+    assert props.children[0].children[0].attribute(ds, 'uri') == 'urn:fields'
+    before = parts(doc)
+    assert before[occupied.lstrip('/')] == b'<keep/>'
+    doc = Document.from_bytes(doc.bytes())
+    data = b'<fields xmlns="urn:fields"><name>Jeremy</name></fields>'
+    changed = doc.set_custom_xml(item_id.lower(), data)
+    assert changed.uri == item.uri and changed.read_bytes() == data
+    after = parts(doc)
+    assert after.pop(item.uri.lstrip('/')) == data
+    before.pop(item.uri.lstrip('/'))
+    assert after == before
+    assert not doc.validate()['issues']
 
 def test_missing_dependency_is_reported_without_discarding_main_validation():
     source = FIXTURES/'pandoc/track_changes_scrubbed_metadata.docx'
