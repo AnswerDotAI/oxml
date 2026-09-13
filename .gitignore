@@ -1,3 +1,5 @@
+links/
+meta/
 __pycache__/
 *.py[cod]
 *.so

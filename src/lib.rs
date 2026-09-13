@@ -1,13 +1,16 @@
-pub fn hello(name: &str) -> String { format!("Hello, {name}!") }
-
 use pyo3::prelude::*;
-
-#[pyfunction(name = "hello")]
-fn py_hello(name: &str) -> String { hello(name) }
+mod schema;
+mod xml;
+mod package;
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(py_hello, m)?)?;
+    m.add_class::<xml::Xml>()?;
+    m.add_class::<package::Package>()?;
+    m.add_function(wrap_pyfunction!(schema::metadata_json, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::analyze, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::check_attribute, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::element_type, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
