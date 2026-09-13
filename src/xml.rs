@@ -1,6 +1,14 @@
 //! General ordered XML storage, preflighted edits and deferred serialization. Schema knowledge lives elsewhere.
-use pyo3::{exceptions::{PyIndexError, PyReferenceError, PyValueError}, prelude::*, types::PyBytes};
-use quick_xml::{encoding::DecodingReader, events::{BytesDecl, BytesPI, BytesStart, BytesText, Event}, Reader, Writer, XmlVersion};
+use pyo3::{
+    exceptions::{PyIndexError, PyReferenceError, PyValueError},
+    prelude::*,
+    types::PyBytes,
+};
+use quick_xml::{
+    encoding::DecodingReader,
+    events::{BytesDecl, BytesPI, BytesStart, BytesText, Event},
+    Reader, Writer, XmlVersion,
+};
 use serde_json::{json, Value};
 use std::{collections::HashSet, io::Read};
 
@@ -29,8 +37,8 @@ fn name_start(c: char) -> bool {
 }
 fn valid_name(value: &str, colon: bool) -> bool {
     let mut chars = value.chars();
-    chars.next().is_some_and(|c| name_start(c) || colon && c == ':') && chars.all(|c|
-        name_start(c) || colon && c == ':' || matches!(c, '-' | '.' | '0'..='9' | '\u{b7}' | '\u{300}'..='\u{36f}' | '\u{203f}'..='\u{2040}'))
+    chars.next().is_some_and(|c| name_start(c) || colon && c == ':')
+        && chars.all(|c| name_start(c) || colon && c == ':' || matches!(c, '-' | '.' | '0'..='9' | '\u{b7}' | '\u{300}'..='\u{36f}' | '\u{203f}'..='\u{2040}'))
 }
 pub(crate) fn check_local(value: &str) -> PyResult<()> {
     if !valid_name(value, false) { return Err(error(format!("Invalid XML local name {value:?}"))); }
@@ -55,9 +63,14 @@ fn escaped(value: &str, attribute: bool) -> String {
     let mut result = String::new();
     for c in value.chars() {
         match c {
-            '&' => result.push_str("&amp;"), '<' => result.push_str("&lt;"), '>' => result.push_str("&gt;"),
-            '"' if attribute => result.push_str("&quot;"), '\r' => result.push_str("&#13;"),
-            '\n' if attribute => result.push_str("&#10;"), '\t' if attribute => result.push_str("&#9;"), _ => result.push(c),
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' if attribute => result.push_str("&quot;"),
+            '\r' => result.push_str("&#13;"),
+            '\n' if attribute => result.push_str("&#10;"),
+            '\t' if attribute => result.push_str("&#9;"),
+            _ => result.push(c),
         }
     }
     result
@@ -72,9 +85,8 @@ impl Name {
         check_local(local)?;
         if !prefix.is_empty() { check_local(prefix)?; }
         if lexical.starts_with(':') || prefix == "xmlns" { return Err(error("Invalid XML qualified name")); }
-        let uri = if attribute && prefix.is_empty() { "" } else {
-            binding(namespaces, prefix).ok_or_else(|| error(format!("Unbound XML prefix {prefix:?}")))?
-        };
+        let uri =
+            if attribute && prefix.is_empty() { "" } else { binding(namespaces, prefix).ok_or_else(|| error(format!("Unbound XML prefix {prefix:?}")))? };
         Ok(Self { uri: uri.into(), local: local.into(), prefix: prefix.into() })
     }
 }
@@ -93,12 +105,17 @@ impl Element {
     }
     pub fn namespace(&self, prefix: &str) -> Option<&str> { binding(&self.namespaces, prefix) }
     fn edit_name(&mut self, uri: &str, local: &str, prefix: Option<&str>, attribute: bool) -> PyResult<Name> {
-        check_local(local)?; check_value(uri)?;
+        check_local(local)?;
+        check_value(uri)?;
         if uri == XMLNS_NS || attribute && uri.is_empty() && local == "xmlns" { return Err(error("Use declare_namespace for namespace declarations")); }
         let prefix = match prefix {
             Some(p) => p.to_owned(),
             None if uri.is_empty() => String::new(),
-            None => self.namespaces.iter().find(|(p, u)| u == uri && (!attribute || !p.is_empty())).map(|(p, _)| p.clone())
+            None => self
+                .namespaces
+                .iter()
+                .find(|(p, u)| u == uri && (!attribute || !p.is_empty()))
+                .map(|(p, _)| p.clone())
                 .ok_or_else(|| error("New namespace requires an explicit prefix"))?,
         };
         if attribute && prefix.is_empty() && !uri.is_empty() { return Err(error("Namespaced attributes require a nonempty prefix")); }
@@ -115,9 +132,19 @@ impl Element {
     }
 }
 #[derive(Clone, Debug)]
-pub(crate) enum NodeKind { Element(Element), Text(String), Comment(String), Pi { target: String, value: String } }
+pub(crate) enum NodeKind {
+    Element(Element),
+    Text(String),
+    Comment(String),
+    Pi { target: String, value: String },
+}
 #[derive(Clone, Debug)]
-pub(crate) struct Node { pub id: usize, pub parent: Option<usize>, pub kind: NodeKind, pub children: Vec<usize> }
+pub(crate) struct Node {
+    pub id: usize,
+    pub parent: Option<usize>,
+    pub kind: NodeKind,
+    pub children: Vec<usize>,
+}
 impl Node {
     pub fn element(&self) -> Option<&Element> { if let NodeKind::Element(e) = &self.kind { Some(e) } else { None } }
     pub fn text(&self) -> Option<&str> { match &self.kind { NodeKind::Text(s) | NodeKind::Comment(s) => Some(s), _ => None } }
@@ -138,7 +165,8 @@ impl Document {
         if let NodeKind::Element(e) = &mut self.node_mut(id)?.kind { Ok(e) } else { Err(error("Expected an XML element")) }
     }
     pub fn element_ids(&self) -> Vec<usize> {
-        let mut result = Vec::new(); let mut stack = self.children.iter().rev().copied().collect::<Vec<_>>();
+        let mut result = Vec::new();
+        let mut stack = self.children.iter().rev().copied().collect::<Vec<_>>();
         while let Some(id) = stack.pop() {
             let node = self.nodes[id].as_ref().unwrap();
             if node.element().is_some() { result.push(id); }
@@ -147,11 +175,14 @@ impl Document {
         result
     }
     fn sequence(&self, parent: Option<usize>) -> PyResult<&Vec<usize>> {
-        match parent { Some(id) => {
-            let n = self.node(id)?;
-            if n.element().is_none() { return Err(error("Only elements have child content")); }
-            Ok(&n.children)
-        }, None => Ok(&self.children) }
+        match parent {
+            Some(id) => {
+                let n = self.node(id)?;
+                if n.element().is_none() { return Err(error("Only elements have child content")); }
+                Ok(&n.children)
+            }
+            None => Ok(&self.children),
+        }
     }
     fn sequence_mut(&mut self, parent: Option<usize>) -> PyResult<&mut Vec<usize>> {
         match parent { Some(id) => Ok(&mut self.node_mut(id)?.children), None => Ok(&mut self.children) }
@@ -165,7 +196,10 @@ impl Document {
     }
     fn append_text(&mut self, parent: Option<usize>, value: String) -> PyResult<()> {
         if let Some(id) = self.sequence(parent)?.last().copied() {
-            if let NodeKind::Text(old) = &mut self.node_mut(id)?.kind { old.push_str(&value); return Ok(()); }
+            if let NodeKind::Text(old) = &mut self.node_mut(id)?.kind {
+                old.push_str(&value);
+                return Ok(());
+            }
         }
         self.add(parent, NodeKind::Text(value))?;
         Ok(())
@@ -181,14 +215,16 @@ impl Document {
     pub(crate) fn remove(&mut self, id: usize) -> PyResult<()> {
         if id == self.root { return Err(error("Cannot delete the document element")); }
         let (parent, index) = self.position(id)?;
-        self.sequence_mut(parent)?.remove(index); self.drop_subtree(id);
+        self.sequence_mut(parent)?.remove(index);
+        self.drop_subtree(id);
         Ok(())
     }
     fn insert_kind(&mut self, parent: usize, index: usize, kind: NodeKind) -> PyResult<usize> {
         if index > self.sequence(Some(parent))?.len() { return Err(PyIndexError::new_err("XML content index out of range")); }
         let id = self.add(Some(parent), kind)?;
         let sequence = self.sequence_mut(Some(parent))?;
-        sequence.pop(); sequence.insert(index, id);
+        sequence.pop();
+        sequence.insert(index, id);
         Ok(id)
     }
     fn import(&mut self, source: &Document, id: usize, parent: Option<usize>) -> PyResult<usize> {
@@ -203,15 +239,22 @@ impl Document {
     }
     fn depth(&self, mut parent: Option<usize>) -> PyResult<usize> {
         let mut depth = 0;
-        while let Some(id) = parent { let node = self.node(id)?; depth += usize::from(node.element().is_some()); parent = node.parent; }
+        while let Some(id) = parent {
+            let node = self.node(id)?;
+            depth += usize::from(node.element().is_some());
+            parent = node.parent;
+        }
         Ok(depth)
     }
     fn subtree_size(&self, id: usize, base_depth: usize) -> PyResult<usize> {
-        let mut count = 0; let mut stack = vec![(id, base_depth)];
+        let mut count = 0;
+        let mut stack = vec![(id, base_depth)];
         while let Some((id, depth)) = stack.pop() {
-            let node = self.node(id)?; let depth = depth + usize::from(node.element().is_some());
+            let node = self.node(id)?;
+            let depth = depth + usize::from(node.element().is_some());
             if depth > MAX_DEPTH { return Err(error("XML exceeds the depth limit of 256")); }
-            count += 1; stack.extend(node.children.iter().map(|id| (*id, depth)));
+            count += 1;
+            stack.extend(node.children.iter().map(|id| (*id, depth)));
         }
         Ok(count)
     }
@@ -238,7 +281,8 @@ impl Document {
         let node = self.node(id)?;
         match &node.kind {
             NodeKind::Element(e) => {
-                let name = e.name.lexical(); let mut content = name.clone();
+                let name = e.name.lexical();
+                let mut content = name.clone();
                 for (prefix, uri) in &e.namespaces {
                     if binding(inherited, prefix) == Some(uri.as_str()) { continue; }
                     let key = if prefix.is_empty() { "xmlns".into() } else { format!("xmlns:{prefix}") };
@@ -246,8 +290,7 @@ impl Document {
                 }
                 for a in &e.attributes { content.push_str(&format!(" {}=\"{}\"", a.name.lexical(), escaped(&a.value, true))); }
                 let start = BytesStart::from_content(content, name.len());
-                if node.children.is_empty() { writer.write_event(Event::Empty(start)).map_err(error)?; }
-                else {
+                if node.children.is_empty() { writer.write_event(Event::Empty(start)).map_err(error)?; } else {
                     writer.write_event(Event::Start(start.borrow())).map_err(error)?;
                     for child in &node.children { self.write_node(writer, *child, &e.namespaces)?; }
                     writer.write_event(Event::End(start.to_end())).map_err(error)?;
@@ -264,8 +307,7 @@ impl Document {
         Ok(())
     }
     pub(crate) fn serialize(&self) -> PyResult<Vec<u8>> {
-        let context_bytes: usize = self.nodes.iter().flatten().filter_map(Node::element)
-            .flat_map(|e| &e.namespaces).map(|(p, uri)| p.len() + uri.len()).sum();
+        let context_bytes: usize = self.nodes.iter().flatten().filter_map(Node::element).flat_map(|e| &e.namespaces).map(|(p, uri)| p.len() + uri.len()).sum();
         if context_bytes > MAX_CONTEXT { return Err(error("XML exceeds the 64 MiB namespace-context limit")); }
         let mut writer = Writer::new(Vec::new());
         if let Some(d) = &self.declaration { writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), d.standalone.as_deref()))).map_err(error)?; }
@@ -274,22 +316,46 @@ impl Document {
     }
     fn row(&self, id: usize) -> PyResult<Value> {
         let node = self.node(id)?;
-        let kind = match node.kind { NodeKind::Element(_) => "element", NodeKind::Text(_) => "text", NodeKind::Comment(_) => "comment", NodeKind::Pi { .. } => "pi" };
+        let kind = match node.kind {
+            NodeKind::Element(_) => "element",
+            NodeKind::Text(_) => "text",
+            NodeKind::Comment(_) => "comment",
+            NodeKind::Pi { .. } => "pi",
+        };
         let mut row = json!({"id":node.id,"parent":node.parent,"kind":kind,"children":node.children});
         if let Some(e) = node.element() {
-            let content = node.children.iter().map(|id| {
-                let child = self.nodes[*id].as_ref().unwrap();
-                match &child.kind {
-                    NodeKind::Element(_) => json!(["element", id]), NodeKind::Text(s) => json!(["text", s]),
-                    NodeKind::Comment(s) => json!(["comment", s]), NodeKind::Pi { target, value } => json!(["pi", [target, value]]),
-                }
-            }).collect::<Vec<_>>();
-            row["qname"] = json!([e.name.uri,e.name.local]); row["prefix"] = json!(e.name.prefix);
-            row["attributes"] = json!(e.attributes.iter().map(|a| [&a.name.uri,&a.name.local,&a.value]).collect::<Vec<_>>());
+            let content = node
+                .children
+                .iter()
+                .map(|id| {
+                    let child = self.nodes[*id].as_ref().unwrap();
+                    match &child.kind {
+                        NodeKind::Element(_) => json!(["element", id]),
+                        NodeKind::Text(s) => json!(["text", s]),
+                        NodeKind::Comment(s) => json!(["comment", s]),
+                        NodeKind::Pi { target, value } => json!(["pi", [target, value]]),
+                    }
+                })
+                .collect::<Vec<_>>();
+            row["qname"] = json!([e.name.uri, e.name.local]);
+            row["prefix"] = json!(e.name.prefix);
+            row["attributes"] = json!(e.attributes.iter().map(|a| [&a.name.uri, &a.name.local, &a.value]).collect::<Vec<_>>());
             row["attribute_prefixes"] = json!(e.attributes.iter().map(|a| &a.name.prefix).collect::<Vec<_>>());
-            row["namespaces"] = json!(e.namespaces); row["content"] = json!(content);
-            row["text"] = json!(node.children.iter().filter_map(|id| match &self.nodes[*id].as_ref().unwrap().kind { NodeKind::Text(s) => Some(s.as_str()), _ => None }).collect::<String>());
-        } else if let NodeKind::Pi { target, value } = &node.kind { row["target"] = json!(target); row["text"] = json!(value); }
+            row["namespaces"] = json!(e.namespaces);
+            row["content"] = json!(content);
+            row["text"] = json!(node
+                .children
+                .iter()
+                .filter_map(|id| match &self.nodes[*id].as_ref().unwrap().kind {
+                    NodeKind::Text(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect::<String>());
+        }
+        else if let NodeKind::Pi { target, value } = &node.kind {
+            row["target"] = json!(target);
+            row["text"] = json!(value);
+        }
         else { row["text"] = json!(node.text()); }
         Ok(row)
     }
@@ -297,7 +363,8 @@ impl Document {
 
 // The event reader is deliberately supplemented: events are not a well-formedness guarantee.
 fn attributes(start: &BytesStart<'_>) -> PyResult<Vec<(String, String)>> {
-    let raw = start.attributes_raw(); let mut quote = None;
+    let raw = start.attributes_raw();
+    let mut quote = None;
     for (i, c) in raw.char_indices() {
         if let Some(q) = quote {
             if c == '<' { return Err(error("Literal '<' in XML attribute")); }
@@ -307,21 +374,24 @@ fn attributes(start: &BytesStart<'_>) -> PyResult<Vec<(String, String)>> {
             }
         } else if matches!(c, '\'' | '"') { quote = Some(c); }
     }
-    start.attributes().map(|a| {
-        let a = a.map_err(error)?;
-        if a.value.len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
-        let value = a.normalized_value(XmlVersion::Implicit1_0).map_err(error)?.into_owned();
-        check_value(&value)?;
-        Ok((a.key.as_ref().into(), value))
-    }).collect()
+    start
+        .attributes()
+        .map(|a| {
+            let a = a.map_err(error)?;
+            if a.value.len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
+            let value = a.normalized_value(XmlVersion::Implicit1_0).map_err(error)?.into_owned();
+            check_value(&value)?;
+            Ok((a.key.as_ref().into(), value))
+        })
+        .collect()
 }
 fn declaration(event: &BytesDecl<'_>, encoding: &str) -> PyResult<Declaration> {
     let start = BytesStart::from_content(event.as_ref(), 3);
     let attrs = attributes(&start)?;
     let names = attrs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
-    if !matches!(names.as_slice(), ["version"] | ["version", "encoding"] | ["version", "standalone"] | ["version", "encoding", "standalone"]) || attrs[0].1 != "1.0" {
-        return Err(error("Invalid or unsupported XML declaration"));
-    }
+    if !matches!(names.as_slice(), ["version"] | ["version", "encoding"] | ["version", "standalone"] | ["version", "encoding", "standalone"])
+        || attrs[0].1 != "1.0"
+    { return Err(error("Invalid or unsupported XML declaration")); }
     // Declaration pseudo-attributes are literal grammar, never entity references.
     if event.as_ref().contains('&') { return Err(error("Entity reference in XML declaration")); }
     let declared = attrs.iter().find(|(n, _)| n == "encoding").map(|(_, v)| v.to_ascii_uppercase());
@@ -345,7 +415,8 @@ fn check_comment(value: &str) -> PyResult<()> {
 }
 fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> PyResult<Document> {
     check_value(source)?;
-    let mut reader = Reader::from_str(source); reader.config_mut().check_comments = true;
+    let mut reader = Reader::from_str(source);
+    reader.config_mut().check_comments = true;
     let mut doc = Document { nodes: Vec::new(), root: 0, children: Vec::new(), declaration: None };
     let mut stack = Vec::new();
     let mut context_bytes = 0;
@@ -359,13 +430,16 @@ fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> PyResult<Doc
                 let mut namespaces = match parent { Some(id) => doc.node(id)?.element().unwrap().namespaces.clone(), None => base_namespaces() };
                 let attrs = attributes(start)?;
                 for (key, value) in &attrs {
-                    if key == "xmlns" { bind(&mut namespaces, "", value)?; }
-                    else if let Some(prefix) = key.strip_prefix("xmlns:") { check_local(prefix)?; bind(&mut namespaces, prefix, value)?; }
+                    if key == "xmlns" { bind(&mut namespaces, "", value)?; } else if let Some(prefix) = key.strip_prefix("xmlns:") {
+                        check_local(prefix)?;
+                        bind(&mut namespaces, prefix, value)?;
+                    }
                 }
                 context_bytes += namespaces.iter().map(|(p, uri)| p.len() + uri.len()).sum::<usize>();
                 if context_bytes > MAX_CONTEXT { return Err(error("XML exceeds the 64 MiB namespace-context limit")); }
                 let name = Name::resolve(start.name().as_ref(), &namespaces, false)?;
-                let mut attributes = Vec::new(); let mut expanded = HashSet::new();
+                let mut attributes = Vec::new();
+                let mut expanded = HashSet::new();
                 for (key, value) in attrs {
                     if key == "xmlns" || key.starts_with("xmlns:") { continue; }
                     let name = Name::resolve(&key, &namespaces, true)?;
@@ -375,7 +449,9 @@ fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> PyResult<Doc
                 let id = doc.add(parent, NodeKind::Element(Element { name, attributes, namespaces }))?;
                 if matches!(event, Event::Start(_)) { stack.push(id); }
             }
-            Event::End(_) => { stack.pop().ok_or_else(|| error("Unmatched XML end tag"))?; }
+            Event::End(_) => {
+                stack.pop().ok_or_else(|| error("Unmatched XML end tag"))?;
+            }
             Event::Text(text) => {
                 if text.as_ref().contains("]]>") { return Err(error("Literal ']]>' in XML text")); }
                 let value = text.xml10_content().into_owned();
@@ -388,12 +464,15 @@ fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> PyResult<Doc
             }
             Event::GeneralRef(reference) => {
                 if parent.is_none() { return Err(error("Entity reference outside the document element")); }
-                let value = if let Some(c) = reference.resolve_char_ref().map_err(error)? { c.to_string() }
-                    else { quick_xml::escape::resolve_predefined_entity(reference.as_ref()).ok_or_else(|| error("DTD and custom entities are disabled"))?.into() };
-                check_value(&value)?; doc.append_text(parent, value)?;
+                let value = if let Some(c) = reference.resolve_char_ref().map_err(error)? { c.to_string() } else {
+                    quick_xml::escape::resolve_predefined_entity(reference.as_ref()).ok_or_else(|| error("DTD and custom entities are disabled"))?.into()
+                };
+                check_value(&value)?;
+                doc.append_text(parent, value)?;
             }
             Event::Comment(text) => {
-                let value = text.xml10_content().into_owned(); check_comment(&value)?;
+                let value = text.xml10_content().into_owned();
+                check_comment(&value)?;
                 doc.add(parent, NodeKind::Comment(value))?;
             }
             Event::PI(pi) => {
@@ -416,14 +495,13 @@ fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> PyResult<Doc
 }
 fn decode(data: &[u8]) -> PyResult<(String, String)> {
     if data.len() > MAX_BYTES { return Err(error("XML exceeds the 32 MiB input limit")); }
-    let mut decoder = DecodingReader::new(data); let mut source = String::new();
+    let mut decoder = DecodingReader::new(data);
+    let mut source = String::new();
     decoder.by_ref().take((MAX_BYTES + 1) as u64).read_to_string(&mut source).map_err(error)?;
     check_value(&source)?;
     Ok((source, decoder.encoding().name().into()))
 }
-pub(crate) fn parse_bytes(data: &[u8]) -> PyResult<Document> {
-    parse_bytes_limited(data, MAX_BYTES, MAX_DEPTH)
-}
+pub(crate) fn parse_bytes(data: &[u8]) -> PyResult<Document> { parse_bytes_limited(data, MAX_BYTES, MAX_DEPTH) }
 pub(crate) fn parse_bytes_limited(data: &[u8], max_bytes: usize, max_depth: usize) -> PyResult<Document> {
     if data.len() > max_bytes { return Err(error("XML exceeds the input byte limit")); }
     let (source, encoding) = decode(data)?;
@@ -454,7 +532,8 @@ impl Xml {
         self.read()?;
         // Each operation checks its inputs before touching live state; there is no whole-tree transaction.
         let result = operation(&mut self.document)?;
-        self.cached_bytes = None; self.revision += 1;
+        self.cached_bytes = None;
+        self.revision += 1;
         Ok(result)
     }
     fn insert_fragment(doc: &mut Document, parent: Option<usize>, index: usize, data: &[u8], replacing: Option<usize>) -> PyResult<Vec<usize>> {
@@ -473,10 +552,14 @@ impl Xml {
                 return Err(error("Character data outside the document element"));
             }
         }
-        if let Some(id) = replacing { doc.sequence_mut(parent)?.remove(index); doc.drop_subtree(id); }
+        if let Some(id) = replacing {
+            doc.sequence_mut(parent)?.remove(index);
+            doc.drop_subtree(id);
+        }
         let mut ids = Vec::new();
         for id in roots { ids.push(doc.import(&source, *id, parent)?); }
-        let sequence = doc.sequence_mut(parent)?; sequence.truncate(sequence.len() - ids.len());
+        let sequence = doc.sequence_mut(parent)?;
+        sequence.truncate(sequence.len() - ids.len());
         sequence.splice(index..index, ids.iter().copied());
         if parent.is_none() { doc.root = *doc.children.iter().find(|id| doc.nodes[**id].as_ref().unwrap().element().is_some()).unwrap(); }
         Ok(ids)
@@ -511,11 +594,12 @@ impl Xml {
     }
     #[staticmethod]
     fn check_qname(name: &str) -> PyResult<()> {
-        if let Some((prefix, local)) = name.split_once(':') { check_local(prefix)?; check_local(local) } else { check_local(name) }
+        if let Some((prefix, local)) = name.split_once(':') {
+            check_local(prefix)?;
+            check_local(local)
+        } else { check_local(name) }
     }
-    fn document_text(&self, py: Python<'_>) -> PyResult<String> {
-        py.detach(|| String::from_utf8(self.read()?.serialize()?).map_err(error))
-    }
+    fn document_text(&self, py: Python<'_>) -> PyResult<String> { py.detach(|| String::from_utf8(self.read()?.serialize()?).map_err(error)) }
     fn node(&self, id: usize) -> PyResult<String> { Ok(self.read()?.row(id)?.to_string()) }
     fn qname(&self, id: usize) -> PyResult<(String, String)> {
         let doc = self.read()?;
@@ -537,133 +621,187 @@ impl Xml {
     }
     fn parent(&self, id: usize) -> PyResult<Option<usize>> { Ok(self.read()?.node(id)?.parent) }
     fn set_text(&mut self, py: Python<'_>, id: usize, value: &str) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| {
-            check_value(value)?;
-            match &doc.node(id)?.kind {
-                NodeKind::Element(_) => {
-                    let children = doc.node(id)?.children.clone();
-                    if children.iter().any(|id| !matches!(doc.nodes[*id].as_ref().unwrap().kind, NodeKind::Text(_))) {
-                        return Err(error("set_text requires text-only content; mixed content is not replaced"));
+        py.detach(|| {
+            self.edit(|doc| {
+                check_value(value)?;
+                match &doc.node(id)?.kind {
+                    NodeKind::Element(_) => {
+                        let children = doc.node(id)?.children.clone();
+                        if children.iter().any(|id| !matches!(doc.nodes[*id].as_ref().unwrap().kind, NodeKind::Text(_))) {
+                            return Err(error("set_text requires text-only content; mixed content is not replaced"));
+                        }
+                        if value.is_empty() {
+                            for child in children { doc.drop_subtree(child); }
+                            doc.node_mut(id)?.children.clear();
+                        } else if let Some(first) = children.first().copied() {
+                            doc.node_mut(first)?.kind = NodeKind::Text(value.into());
+                            for child in &children[1..] { doc.drop_subtree(*child); }
+                            doc.node_mut(id)?.children.truncate(1);
+                        } else { doc.add(Some(id), NodeKind::Text(value.into()))?; }
                     }
-                    if value.is_empty() {
-                        for child in children { doc.drop_subtree(child); }
-                        doc.node_mut(id)?.children.clear();
-                    } else if let Some(first) = children.first().copied() {
-                        doc.node_mut(first)?.kind = NodeKind::Text(value.into());
-                        for child in &children[1..] { doc.drop_subtree(*child); }
-                        doc.node_mut(id)?.children.truncate(1);
-                    } else { doc.add(Some(id), NodeKind::Text(value.into()))?; }
+                    NodeKind::Text(_) => {
+                        if doc.node(id)?.parent.is_none() && !value.chars().all(space) { return Err(error("Character data outside the document element")); }
+                        doc.node_mut(id)?.kind = NodeKind::Text(value.into());
+                    }
+                    NodeKind::Comment(_) => {
+                        check_comment(value)?;
+                        doc.node_mut(id)?.kind = NodeKind::Comment(normalize_eols(value));
+                    }
+                    NodeKind::Pi { .. } => return Err(error("Use replace_node to replace a processing instruction")),
                 }
-                NodeKind::Text(_) => {
-                    if doc.node(id)?.parent.is_none() && !value.chars().all(space) { return Err(error("Character data outside the document element")); }
-                    doc.node_mut(id)?.kind = NodeKind::Text(value.into());
-                }
-                NodeKind::Comment(_) => { check_comment(value)?; doc.node_mut(id)?.kind = NodeKind::Comment(normalize_eols(value)); }
-                NodeKind::Pi { .. } => return Err(error("Use replace_node to replace a processing instruction")),
-            }
-            Ok(())
-        }))
+                Ok(())
+            })
+        })
     }
     #[pyo3(signature=(id, uri, local, value, prefix=None))]
     fn set_attribute(&mut self, py: Python<'_>, id: usize, uri: &str, local: &str, value: &str, prefix: Option<&str>) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| {
-            check_value(value)?;
-            if escaped(value, true).len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
-            let e = doc.element_mut(id)?;
-            let old_context = e.namespaces.len();
-            let found = e.attributes.iter().position(|a| a.name.uri == uri && a.name.local == local);
-            if let Some(i) = found {
-                if prefix.is_some() { e.attributes[i].name = e.edit_name(uri, local, prefix, true)?; }
-                e.attributes[i].value = value.into();
-            } else { let name = e.edit_name(uri, local, prefix, true)?; e.attributes.push(Attribute { name, value: value.into() }); }
-            if e.namespaces.len() != old_context { doc.inherit_namespaces(id); }
-            Ok(())
-        }))
+        py.detach(|| {
+            self.edit(|doc| {
+                check_value(value)?;
+                if escaped(value, true).len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
+                let e = doc.element_mut(id)?;
+                let old_context = e.namespaces.len();
+                let found = e.attributes.iter().position(|a| a.name.uri == uri && a.name.local == local);
+                if let Some(i) = found {
+                    if prefix.is_some() { e.attributes[i].name = e.edit_name(uri, local, prefix, true)?; }
+                    e.attributes[i].value = value.into();
+                }
+                else {
+                    let name = e.edit_name(uri, local, prefix, true)?;
+                    e.attributes.push(Attribute { name, value: value.into() });
+                }
+                if e.namespaces.len() != old_context { doc.inherit_namespaces(id); }
+                Ok(())
+            })
+        })
     }
     fn remove_attribute(&mut self, py: Python<'_>, id: usize, uri: &str, local: &str) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| { doc.element_mut(id)?.attributes.retain(|a| a.name.uri != uri || a.name.local != local); Ok(()) }))
+        py.detach(|| {
+            self.edit(|doc| {
+                doc.element_mut(id)?.attributes.retain(|a| a.name.uri != uri || a.name.local != local);
+                Ok(())
+            })
+        })
     }
     #[pyo3(signature=(id, uri, local, prefix=None))]
     fn rename(&mut self, py: Python<'_>, id: usize, uri: &str, local: &str, prefix: Option<&str>) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| {
-            let e = doc.element_mut(id)?;
-            let old_context = e.namespaces.len();
-            e.name = e.edit_name(uri, local, prefix, false)?;
-            if e.namespaces.len() != old_context { doc.inherit_namespaces(id); }
-            Ok(())
-        }))
+        py.detach(|| {
+            self.edit(|doc| {
+                let e = doc.element_mut(id)?;
+                let old_context = e.namespaces.len();
+                e.name = e.edit_name(uri, local, prefix, false)?;
+                if e.namespaces.len() != old_context { doc.inherit_namespaces(id); }
+                Ok(())
+            })
+        })
     }
     fn declare_namespace(&mut self, py: Python<'_>, id: usize, prefix: &str, uri: &str) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| {
-            let e = doc.element_mut(id)?;
-            if e.name.prefix == prefix && e.name.uri != uri || e.attributes.iter().any(|a| !a.name.prefix.is_empty() && a.name.prefix == prefix && a.name.uri != uri) {
-                return Err(error("Namespace binding conflicts with an existing name"));
-            }
-            let old_context = e.namespaces.len();
-            bind(&mut e.namespaces, prefix, uri)?;
-            if e.namespaces.len() != old_context { doc.inherit_namespaces(id); }
-            Ok(())
-        }))
+        py.detach(|| {
+            self.edit(|doc| {
+                let e = doc.element_mut(id)?;
+                if e.name.prefix == prefix && e.name.uri != uri
+                    || e.attributes.iter().any(|a| !a.name.prefix.is_empty() && a.name.prefix == prefix && a.name.uri != uri)
+                { return Err(error("Namespace binding conflicts with an existing name")); }
+                let old_context = e.namespaces.len();
+                bind(&mut e.namespaces, prefix, uri)?;
+                if e.namespaces.len() != old_context { doc.inherit_namespaces(id); }
+                Ok(())
+            })
+        })
     }
     fn insert_xml(&mut self, py: Python<'_>, parent: usize, index: usize, data: &[u8]) -> PyResult<Vec<usize>> {
         py.detach(|| self.edit(|doc| Self::insert_fragment(doc, Some(parent), index, data, None)))
     }
     fn insert_text(&mut self, py: Python<'_>, parent: usize, index: usize, value: &str) -> PyResult<usize> {
-        py.detach(|| self.edit(|doc| { check_value(value)?; doc.insert_kind(parent, index, NodeKind::Text(value.into())) }))
+        py.detach(|| {
+            self.edit(|doc| {
+                check_value(value)?;
+                doc.insert_kind(parent, index, NodeKind::Text(value.into()))
+            })
+        })
     }
     fn insert_comment(&mut self, py: Python<'_>, parent: usize, index: usize, value: &str) -> PyResult<usize> {
-        py.detach(|| self.edit(|doc| { check_comment(value)?; doc.insert_kind(parent, index, NodeKind::Comment(normalize_eols(value))) }))
+        py.detach(|| {
+            self.edit(|doc| {
+                check_comment(value)?;
+                doc.insert_kind(parent, index, NodeKind::Comment(normalize_eols(value)))
+            })
+        })
     }
     #[pyo3(signature=(parent, index, target, value=""))]
     fn insert_pi(&mut self, py: Python<'_>, parent: usize, index: usize, target: &str, value: &str) -> PyResult<usize> {
-        py.detach(|| self.edit(|doc| { check_pi(target, value)?; doc.insert_kind(parent, index, NodeKind::Pi { target: target.into(), value: normalize_eols(value) }) }))
+        py.detach(|| {
+            self.edit(|doc| {
+                check_pi(target, value)?;
+                doc.insert_kind(parent, index, NodeKind::Pi { target: target.into(), value: normalize_eols(value) })
+            })
+        })
     }
-    fn delete(&mut self, py: Python<'_>, id: usize) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| doc.remove(id)))
-    }
+    fn delete(&mut self, py: Python<'_>, id: usize) -> PyResult<()> { py.detach(|| self.edit(|doc| doc.remove(id))) }
     fn replace_node(&mut self, py: Python<'_>, id: usize, data: &[u8]) -> PyResult<Vec<usize>> {
-        py.detach(|| self.edit(|doc| {
-            let (parent, index) = doc.position(id)?;
-            Self::insert_fragment(doc, parent, index, data, Some(id))
-        }))
+        py.detach(|| {
+            self.edit(|doc| {
+                let (parent, index) = doc.position(id)?;
+                Self::insert_fragment(doc, parent, index, data, Some(id))
+            })
+        })
     }
     fn copy(&mut self, py: Python<'_>, id: usize, parent: usize, index: usize) -> PyResult<usize> {
-        py.detach(|| self.edit(|doc| {
-            if index > doc.sequence(Some(parent))?.len() { return Err(PyIndexError::new_err("XML content index out of range")); }
-            doc.capacity(doc.subtree_size(id, doc.depth(Some(parent))?)?)?;
-            // Stage only the copied subtree, including when the destination is inside it.
-            let mut source = Document { nodes: Vec::new(), root: 0, children: Vec::new(), declaration: None };
-            let root = source.import(doc, id, None)?;
-            let new = doc.import(&source, root, Some(parent))?;
-            let sequence = doc.sequence_mut(Some(parent))?; sequence.pop(); sequence.insert(index, new);
-            doc.inherit_namespaces(new);
-            Ok(new)
-        }))
+        py.detach(|| {
+            self.edit(|doc| {
+                if index > doc.sequence(Some(parent))?.len() { return Err(PyIndexError::new_err("XML content index out of range")); }
+                doc.capacity(doc.subtree_size(id, doc.depth(Some(parent))?)?)?;
+                // Stage only the copied subtree, including when the destination is inside it.
+                let mut source = Document { nodes: Vec::new(), root: 0, children: Vec::new(), declaration: None };
+                let root = source.import(doc, id, None)?;
+                let new = doc.import(&source, root, Some(parent))?;
+                let sequence = doc.sequence_mut(Some(parent))?;
+                sequence.pop();
+                sequence.insert(index, new);
+                doc.inherit_namespaces(new);
+                Ok(new)
+            })
+        })
     }
     fn move_node(&mut self, py: Python<'_>, id: usize, parent: usize, index: usize) -> PyResult<()> {
-        py.detach(|| self.edit(|doc| {
-            if index > doc.sequence(Some(parent))?.len() { return Err(PyIndexError::new_err("XML content index out of range")); }
-            let mut ancestor = Some(parent);
-            while let Some(p) = ancestor { if p == id { return Err(error("Cannot move a node into itself or its descendant")); } ancestor = doc.node(p)?.parent; }
-            doc.subtree_size(id, doc.depth(Some(parent))?)?;
-            let (old_parent, old_index) = doc.position(id)?;
-            doc.sequence_mut(old_parent)?.remove(old_index);
-            let index = index - usize::from(old_parent == Some(parent) && old_index < index);
-            doc.sequence_mut(Some(parent))?.insert(index, id); doc.node_mut(id)?.parent = Some(parent);
-            doc.inherit_namespaces(id);
-            Ok(())
-        }))
+        py.detach(|| {
+            self.edit(|doc| {
+                if index > doc.sequence(Some(parent))?.len() { return Err(PyIndexError::new_err("XML content index out of range")); }
+                let mut ancestor = Some(parent);
+                while let Some(p) = ancestor {
+                    if p == id { return Err(error("Cannot move a node into itself or its descendant")); }
+                    ancestor = doc.node(p)?.parent;
+                }
+                doc.subtree_size(id, doc.depth(Some(parent))?)?;
+                let (old_parent, old_index) = doc.position(id)?;
+                doc.sequence_mut(old_parent)?.remove(old_index);
+                let index = index - usize::from(old_parent == Some(parent) && old_index < index);
+                doc.sequence_mut(Some(parent))?.insert(index, id);
+                doc.node_mut(id)?.parent = Some(parent);
+                doc.inherit_namespaces(id);
+                Ok(())
+            })
+        })
     }
     fn replace(&mut self, py: Python<'_>, data: &[u8]) -> PyResult<()> {
         py.detach(|| {
             self.read()?;
             let parsed = parse_bytes(data)?;
-            let mut candidate = Document { nodes: vec![None; self.document.nodes.len()], root: 0, children: Vec::new(), declaration: parsed.declaration.clone() };
+            let mut candidate =
+                Document { nodes: vec![None; self.document.nodes.len()], root: 0, children: Vec::new(), declaration: parsed.declaration.clone() };
             for id in &parsed.children { candidate.import(&parsed, *id, None)?; }
             candidate.set_root()?;
-            self.document = candidate; self.cached_bytes = Some(data.to_vec()); self.revision += 1;
+            self.document = candidate;
+            self.cached_bytes = Some(data.to_vec());
+            self.revision += 1;
             Ok(())
         })
     }
-    fn invalidate(&mut self) { self.live = false; self.document.nodes.clear(); self.document.children.clear(); self.cached_bytes = None; self.revision += 1; }
+    fn invalidate(&mut self) {
+        self.live = false;
+        self.document.nodes.clear();
+        self.document.children.clear();
+        self.cached_bytes = None;
+        self.revision += 1;
+    }
 }

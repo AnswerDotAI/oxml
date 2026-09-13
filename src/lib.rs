@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
+mod package;
 mod schema;
 mod xml;
-mod package;
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
