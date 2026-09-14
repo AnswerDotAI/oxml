@@ -4,8 +4,8 @@ use pyo3::prelude::*;
 use std::collections::HashSet;
 
 fn invalid(message: impl Into<String>) -> Error { Error::Invalid(message.into()) }
-pub fn children(doc: &Document, parent: usize, local: &str) -> Vec<usize> {
-    doc.node(parent).map(|n| n.children.iter().copied().filter(|&id| name(doc, id) == Some(local)).collect()).unwrap_or_default()
+pub fn children<'a>(doc: &'a Document, parent: usize, local: &'a str) -> Result<impl Iterator<Item = usize> + 'a> {
+    Ok(doc.element_children(parent)?.filter(move |&id| name(doc, id) == Some(local)))
 }
 pub fn word_attribute<'a>(doc: &'a Document, id: usize, local: &str) -> Option<&'a str> {
     doc.node(id).ok()?.element()?.attribute(W, local)
@@ -48,7 +48,7 @@ fn number(doc: &Document, id: usize, attr: &str) -> Result<i64> {
 }
 pub fn find_id(doc: &Document, root: usize, local: &str, attr: &str, value: i64) -> Result<Option<usize>> {
     let mut found = None;
-    for id in children(doc, root, local) {
+    for id in children(doc, root, local)? {
         if number(doc, id, attr)? != value { continue; }
         if found.replace(id).is_some() { return Err(invalid(format!("Multiple {local} IDs"))); }
     }
@@ -56,7 +56,7 @@ pub fn find_id(doc: &Document, root: usize, local: &str, attr: &str, value: i64)
 }
 pub fn next_id(doc: &Document, root: usize, local: &str, attr: &str, mut start: i64) -> Result<i64> {
     let mut used = HashSet::new();
-    for id in children(doc, root, local) { if word_attribute(doc, id, attr).is_some() { used.insert(number(doc, id, attr)?); } }
+    for id in children(doc, root, local)? { if word_attribute(doc, id, attr).is_some() { used.insert(number(doc, id, attr)?); } }
     while used.contains(&start) { start += 1; }
     integer(start, attr, i32::MAX.into())?;
     Ok(start)
@@ -67,7 +67,7 @@ fn style_target(kind: &str) -> Result<(&str, &str, &str)> {
         _ => Err(invalid("Style kind must be paragraph, character or table")) }
 }
 fn style_lookup(doc: &Document, style_id: &str) -> Result<usize> {
-    let found: Vec<_> = children(doc, doc.root, "style").into_iter().filter(|&id| word_attribute(doc, id, "styleId") == Some(style_id)).collect();
+    let found: Vec<_> = children(doc, doc.root, "style")?.filter(|&id| word_attribute(doc, id, "styleId") == Some(style_id)).collect();
     match found.as_slice() { [id] => Ok(*id), [] => Err(Error::Missing(style_id.into())), _ => Err(invalid("Multiple style IDs")) }
 }
 #[pyclass(module = "oxml._core")]
@@ -98,7 +98,7 @@ impl Style {
 #[pyfunction]
 pub fn style_items(package: &Package) -> Result<Vec<Style>> {
     let Some(xml) = part_xml(package, "StyleDefinitionsPart", false)? else { return Ok(Vec::new()); };
-    let ids = { let doc = xml.read()?; children(&doc, doc.root, "style") };
+    let ids: Vec<_> = { let doc = xml.read()?; let nodes = children(&doc, doc.root, "style")?; nodes.collect() };
     Ok(ids.into_iter().map(|node_id| Style { package: package.clone(), xml: xml.clone(), node_id }).collect())
 }
 #[pyfunction]
@@ -114,7 +114,7 @@ pub fn style_find(package: &Package, display_name: &str, kind: Option<&str>) -> 
     let node_id = {
         let doc = xml.read()?;
         let mut found = None;
-        for id in children(&doc, doc.root, "style") {
+        for id in children(&doc, doc.root, "style")? {
             let display = unique_child(&doc, id, "name")?.and_then(|id| word_attribute(&doc, id, "val"));
             if display != Some(display_name) || kind.is_some_and(|kind| style_kind(&doc, id) != kind) { continue; }
             if found.replace(id).is_some() { return Err(invalid("Multiple style names")); }
@@ -131,7 +131,7 @@ pub fn style_add(package: &Package, style_id: &str, display_name: Option<&str>, 
     let existing = part_xml(package, "StyleDefinitionsPart", false)?;
     if let Some(xml) = &existing {
         let doc = xml.read()?;
-        if children(&doc, doc.root, "style").iter().any(|&id| word_attribute(&doc, id, "styleId") == Some(style_id)) {
+        if children(&doc, doc.root, "style")?.any(|id| word_attribute(&doc, id, "styleId") == Some(style_id)) {
             return Err(invalid("Style ID already exists"));
         }
         if let Some(base) = based_on {
@@ -150,7 +150,10 @@ pub fn style_add(package: &Package, style_id: &str, display_name: Option<&str>, 
         for bytes in fragments { let child = xml::parse_bytes(&bytes)?; source.import(&child, child.root, Some(parent))?; }
     }
     let xml = match existing { Some(xml) => xml, None => part_xml(package, "StyleDefinitionsPart", true)?.unwrap() };
-    let node_id = xml.edit(|doc| text::attach(doc, doc.root, schema::insertion_position(doc, doc.root, W, "style")?, &source))?;
+    let node_id = xml.edit(|doc| {
+        let position = schema::insertion_position(doc, doc.root, W, "style")?;
+        text::attach(doc, doc.root, position, &source)
+    })?;
     Ok(Style { package: package.clone(), xml, node_id })
 }
 
@@ -260,7 +263,7 @@ impl NumberingInstance {
 #[pyfunction]
 pub fn numbering_items(package: &Package) -> Result<Vec<NumberingInstance>> {
     let Some(xml) = part_xml(package, "NumberingDefinitionsPart", false)? else { return Ok(Vec::new()); };
-    let ids = { let doc = xml.read()?; children(&doc, doc.root, "num") };
+    let ids: Vec<_> = { let doc = xml.read()?; let nodes = children(&doc, doc.root, "num")?; nodes.collect() };
     Ok(ids.into_iter().map(|node_id| NumberingInstance { package: package.clone(), xml: xml.clone(), node_id }).collect())
 }
 #[pyfunction]
@@ -281,7 +284,8 @@ pub fn numbering_add(package: &Package, levels: Vec<Level>) -> Result<NumberingI
         let abstract_id = next_id(doc, doc.root, "abstractNum", "abstractNumId", 0)?;
         let ident = next_id(doc, doc.root, "num", "numId", 1)?;
         set_word_attribute(&mut source, root, "abstractNumId", &abstract_id.to_string())?;
-        text::attach(doc, doc.root, schema::insertion_position(doc, doc.root, W, "abstractNum")?, &source)?;
+        let position = schema::insertion_position(doc, doc.root, W, "abstractNum")?;
+        text::attach(doc, doc.root, position, &source)?;
         let position = schema::insertion_position(doc, doc.root, W, "num")?;
         let id = doc.insert_kind(doc.root, position, NodeKind::Element(text::word_element("num")))?;
         set_word_attribute(doc, id, "numId", &ident.to_string())?;

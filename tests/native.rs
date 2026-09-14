@@ -1,4 +1,5 @@
-use oxml::{definitions, error::Result, package::Package, revisions, text::{self, Story, View}};
+use oxml::{definitions, error::Result, footnotes::Footnotes, package::Package, properties::{Properties, Settings, SettingValue},
+    revisions, text::{self, Story, View}};
 
 #[test]
 fn native_edit_review_save_and_invalidate_share_one_document() -> Result<()> {
@@ -24,9 +25,22 @@ fn native_edit_review_save_and_invalidate_share_one_document() -> Result<()> {
     assert_eq!(Story::new_native(other_handle.clone(), body, View::Current)?.text_native()?, "new clause");
     assert_eq!(Story::new_native(other_handle, body, View::Original)?.text_native()?, "old clause");
     assert_eq!(xml.edit(|doc| revisions::apply_all(doc, body, true))?, 2);
+    let report = oxml::schema::analyze_tree(&xml, "Microsoft365", &Default::default(), None, false)?;
+    assert_eq!(report["issues"].as_array().unwrap().len(), 0);
+    assert_eq!(report["coverage"]["xsd_roots_checked"], 1);
+
+    let note = Footnotes::new(package.clone()).create(vec![])?;
+    let paragraph = { let doc = xml.read()?; text::child(&doc, body, "p").unwrap() };
+    xml.attach_document(paragraph, &*note.reference()?.read()?, None)?;
+    definitions::style_get(&package, "FootnoteText")?;
+    definitions::style_get(&package, "FootnoteReference")?;
+    Properties::new(package.clone()).set("title", "Agreement")?;
+    Settings::new(package.clone()).set("defaultTabStop", SettingValue::Text("1".into()))?;
 
     let bytes = package.to_bytes()?;
     let reopened = Package::from_bytes(&bytes)?;
+    assert_eq!(Properties::new(reopened.clone()).get("title")?, "Agreement");
+    assert_eq!(Settings::new(reopened.clone()).get("defaultTabStop")?, SettingValue::Text("1".into()));
     let reopened_xml = reopened.xml(&main)?;
     let reopened_body = { let doc = reopened_xml.read()?; text::child(&doc, doc.root, "body").unwrap() };
     assert_eq!(Story::new_native(reopened_xml, reopened_body, View::Current)?.text_native()?, "new clause");

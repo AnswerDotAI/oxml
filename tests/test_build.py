@@ -1,9 +1,9 @@
-"""Detached construction and XML-only copying into differently bound trees."""
+'Detached construction and XML-only copying into differently bound trees.'
 from xml.etree.ElementTree import fromstring
 from xml.dom.minidom import parseString
 
 import pytest
-from oxml import Document, E, Tree, e, w
+from oxml import Document, E, Tree, e, field, w
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
@@ -14,8 +14,12 @@ def test_callable_attachment_places_definitions_and_keeps_content_order():
     revision = tree.xml.revision
     added = root(e.num(e.abstractNumId(val=0), numId=2))
     assert isinstance(added, w.NumberingInstance) and added.parent.node_id == root.node_id
+    assert str(added).startswith('<w:num ') and added.bytes() == str(added).encode()
+    assert repr(added) == f'NumberingInstance(node_id={added.node_id})'
     assert tree.xml.revision == revision + 1
-    root(e.abstractNum(e.multiLevelType(val='singleLevel'), abstractNumId=0))
+    definition = Tree(e.abstractNum(e.multiLevelType(val='singleLevel'), abstractNumId=0).bytes())
+    root(definition.root)
+    assert definition.root.attribute(W, 'abstractNumId') == '0'
     assert [c.qname[1] for c in root.children] == ['abstractNum', 'num', 'num', 'numIdMacAtCleanup']
     assert parseString(tree.bytes()).documentElement.firstChild.nodeValue == 'keep'
     assert [c.attribute(W, 'numId') for c in root.children[1:3]] == ['1', '2']
@@ -27,12 +31,16 @@ def test_callable_attachment_places_definitions_and_keeps_content_order():
     properties = paragraph(e.pPr(e.jc(val='right')))
     assert paragraph.children[0].node_id == properties.node_id
     assert paragraph(e.r(e.t('Before')), index=1).parent.node_id == paragraph.node_id
+    assert fromstring(e.cantSplit(val=False).bytes()).get(f'{{{W}}}val') == 'off' and fromstring(e.b(val=False).bytes()).get(f'{{{W}}}val') == 'false'
+    assert 'xmlns=""' not in str(e.p()) and b'xmlns=""' in e.p().bytes()
+    parsed = fromstring(field(r'SEQ Figure \* ARABIC', '1', e.rPr(e.b())).bytes())
+    assert parsed.get(f'{{{W}}}instr') == r' SEQ Figure \* ARABIC ' and parsed.get(f'{{{W}}}dirty') == 'true' and parsed[0][1].text == '1'
 
 def test_callable_attachment_requires_explicit_placement_when_order_is_unknown():
     root = Tree(b'<root/>').root
     with pytest.raises(ValueError, match='index'): root(e.p())
     child = root(e.p(), index=0)
-    with pytest.raises(TypeError, match='copy_to'): root(child, index=0)
+    assert root(child, index=0).node_id != child.node_id
 
     body = Tree(e.body(e.p(), e.sectPr()).bytes()).root
     unknown = E('keep', ns={'keep': 'urn:keep'}).opaque()
@@ -42,6 +50,36 @@ def test_callable_attachment_requires_explicit_placement_when_order_is_unknown()
     assert body._tree.bytes() == before
     paragraph = body.children[0]
     with pytest.raises(ValueError, match='index'): paragraph(E('w14').conflictIns())
+
+def test_attachment_and_reorder_sort_children_into_schema_order():
+    style = Tree(e.styles(e.style(e.rPr(e.b()), e.qFormat(), e.name(val='Quote'), e.pPr(e.ind(left=720)), type='paragraph'))).root.children[0]
+    style.insert_xml(2, b'<!--keep-->')
+    revision = style._tree.xml.revision
+    style.reorder()
+    assert [c.qname[1] for c in style.children] == ['name', 'qFormat', 'pPr', 'rPr']
+    assert parseString(style._tree.bytes()).documentElement.firstChild.childNodes[2].nodeValue == 'keep'
+    assert style._tree.xml.revision == revision + 1
+    style.reorder()
+    assert style._tree.xml.revision == revision + 1  # Already in order: nothing moves and nothing is dirtied.
+    body = Tree(e.body(e.sectPr(), e.p(e.r(e.t('1'))), e.p(e.r(e.t('2'))))).root
+    paragraph = body(e.p(e.r(e.t('3'))))
+    assert [c.qname[1] for c in body.children] == ['p', 'p', 'p', 'sectPr'] and body.children[2].node_id == paragraph.node_id
+    assert [t.value for t in body.elements(w.Text)] == ['1', '2', '3']
+    paragraph = body(e.p(e.r(e.t('4'), e.rPr(e.b())), e.pPr(e.jc(val='center'))))
+    assert [c.qname[1] for c in paragraph.children] == ['pPr', 'r'] and [c.qname[1] for c in paragraph.children[1].children] == ['rPr', 't']
+    assert paragraph.child(w.ParagraphProperties).node_id == paragraph.children[0].node_id and paragraph.child(w.Table) is None
+    run = paragraph(e.r(e.t('x'), E('w14').conflictIns()))
+    assert [c.qname[1] for c in run.children] == ['t', 'conflictIns']  # An unrankable subtree is left as written.
+    with pytest.raises(ValueError, match='Multiple'): paragraph.child(w.Run)
+    with pytest.raises(ValueError, match='not in the SDK schema'): Tree(b'<root/>').root.reorder()
+    body(E('keep', ns={'keep': 'urn:keep'}).opaque(), index=0)
+    with pytest.raises(ValueError, match='no unambiguous slot'): body.reorder()
+    with pytest.raises(ValueError, match='w:CT_RPr/w:rPr'): Tree(e.rPr()).root.reorder()
+    assert isinstance(Tree(e.style(type='paragraph')).root, w.Style)
+    styles = Tree(e.styles(e.style(e.pPr(e.spacing(after=0), e.keepNext()), e.name(val='X'), type='paragraph'))).root
+    styles.reorder(deep=True)
+    style = styles.children[0]
+    assert [c.qname[1] for c in style.children] == ['name', 'pPr'] and [c.qname[1] for c in style.children[1].children] == ['keepNext', 'spacing']
 
 def test_nested_paragraph_table_construction_and_docx_roundtrip():
     doc = Document.new()
@@ -53,7 +91,7 @@ def test_nested_paragraph_table_construction_and_docx_roundtrip():
     source_e = E('w', attr_ns='w', ns={'q': 'urn:opaque'})
     source_body = next(source.main.xml.elements(w.Body))
     imported = source_body(source_e.r(e.rPr(e.b()), e.t(text, xml__space='preserve'), E().plain(),
-                                     r__id='rId9', attrs_={'kind': 'q:Type'}), index=0)
+        r__id='rId9', attrs_={'kind': 'q:Type'}), index=0)
     original = source.bytes()
     destination_e = E('w', attr_ns='w', ns={'': 'urn:destination', 'q': 'urn:conflict'})
     paragraph = destination_e.p(e.pPr(e.jc(val='center')))
@@ -64,7 +102,7 @@ def test_nested_paragraph_table_construction_and_docx_roundtrip():
     source.main.replace(b'<root/>')
     with pytest.raises(ReferenceError): paragraph(imported)
     table = e.tbl(e.tblPr(), e.tblGrid(e.gridCol(w=2000) for _ in range(2)),
-                  (e.tr(e.tc(e.p(e.r(e.t(value)))) for value in row) for row in [('A', 'B'), ('C', 'D')]))
+        (e.tr(e.tc(e.p(e.r(e.t(value)))) for value in row) for row in [('A', 'B'), ('C', 'D')]))
     assert tree.xml.revision == revision
     live = body(paragraph)
     assert isinstance(live, w.Paragraph) and tree.xml.revision == revision + 1
@@ -94,8 +132,8 @@ def test_builder_mixed_content_custom_namespaces_and_default_isolation():
 
 def test_cross_tree_copy_keeps_inherited_and_opaque_namespace_bindings():
     source = Tree(b'<root xmlns="urn:source" xmlns:p="urn:old" xmlns:q="urn:opaque" '
-                  b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-                  b'<p:item refs="q:Type" r:id="rId9">left<!--keep--><?pi data?><plain/>right</p:item></root>')
+        b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        b'<p:item refs="q:Type" r:id="rId9">left<!--keep--><?pi data?><plain/>right</p:item></root>')
     original = source.bytes()
     item = source.root.children[0]
     destination = Tree(b'<root xmlns="urn:destination" xmlns:p="urn:new" xmlns:q="urn:other"/>')

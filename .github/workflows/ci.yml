@@ -12,6 +12,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      LIBXML2_STATIC: '1'
+      PKG_CONFIG_PATH: /tmp/oxml-libxml2/install/lib/pkgconfig
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -25,6 +28,10 @@ jobs:
         with:
           args: --profile dist --out dist -i python3.10 -i python3.11 -i python3.12 -i python3.13
           manylinux: auto
+          docker-options: -e LIBXML2_STATIC=1 -e PKG_CONFIG_PATH=/tmp/oxml-libxml2/install/lib/pkgconfig
+          before-script: |
+            if [ "$(uname)" = Linux ]; then yum install -y clang; fi
+            bash scripts/build_libxml2.sh /tmp/oxml-libxml2
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}

@@ -18,17 +18,18 @@ Run `maturin develop` after Rust or embedded-descriptor changes to refresh the i
 * `src/package.rs` owns ZIP/OPC packages and their loaded XML trees. Cloned handles share native state; reads and saving see edits without Python caches or flushing. Replacement/removal invalidates native part and XML handles. It also manages content types, relationships and custom XML datastores.
 * `src/schema.rs` interprets imported SDK types, content models, lexical constraints, versions and semantic rules. It also resolves contextual types, checks typed properties and determines insertion positions.
 * `src/package_schema.rs` shares declared-part discovery and relationship traversal between validation, story enumeration and document operations.
-* `src/text.rs` provides story projections, Unicode ranges, run splitting and paragraph operations. Review operations reuse its protection and selection rules.
+* `src/text.rs` provides story projections, Unicode ranges, run splitting and paragraph operations. Plain and tracked replacements share preparation and protection rules, with separate mutation algorithms.
 * `src/revisions.rs`, `src/comments.rs` and `src/links.rs` implement tracked edits, comments, bookmarks and hyperlinks. Timestamp validation and namespace handling are shared rather than reimplemented per feature.
 * `src/definitions.rs` and `src/tables.rs` implement styles, numbering and rectangular-table edits.
-* `src/importing.rs` transfers selected subtrees with per-import dependency and ID maps. `src/compare.rs` compares body text/direct formatting and uses the same revision writer as explicit edits.
+* `src/properties.rs` implements core properties and schema-aware flat settings. `src/footnotes.rs` owns footnote creation, including default styles.
+* `src/importing.rs` transfers selected subtrees with per-import dependency and ID maps. `src/compare.rs` uses similar's Myers matcher over Unicode word tokens for paragraph text, maps token ranges to native character positions, and uses the same revision writer as explicit edits.
 * `src/error.rs` supplies native errors; conversion to Python exceptions happens at the binding boundary.
 
 The schema layer builds one immutable index for contextual child lookup, semantic-rule dispatch and namespace availability. Content models compile once, including versioned occurrences. Their bounded matcher uses contiguous position sets. Validation borrows live dependency trees and uses compatibility-aware traversal for reference and uniqueness checks. Reference-value sets and duplicate tracking belong to each validation call.
 
 `python/oxml/` contains Python views, argument/result conversion and detached construction conveniences. `model.py` creates nominal classes and enums from compact native descriptors; Python does not load the full schema or implement its rules. `build.py` adds namespace lookup and parsed-element snapshots to fastcore's builder. The other modules delegate document operations to Rust. There is no parallel Python implementation or compatibility layer.
 
-XML/package handles use shared native ownership. A Python `Tree` wrapper is not the tree's identity: separately acquired wrappers can refer to the same native state. Native operations traverse nodes directly; JSON is used only for explicit raw snapshots and coarse validation reports, not internal node-by-node work. Small subtree snapshots are used where copying or retaining previous formatting requires them; ordinary edits do not clone documents or provide transaction rollback.
+XML/package handles use shared native ownership. A Python `Tree` wrapper is not the tree's identity: separately acquired wrappers can refer to the same native state. Native child/descendant iterators share traversal without allocating full result lists; mutation callers collect node IDs when needed. JSON is used only for explicit raw snapshots and coarse validation reports, not internal node-by-node work. Small subtree snapshots are used where copying or retaining previous formatting requires them; ordinary edits do not clone documents or provide transaction rollback.
 
 ## XML construction
 
@@ -40,11 +41,15 @@ Calling a detached expression, such as `props(e.b(), e.i())`, appends children a
 
 Factories resolve names at construction and each expression retains its own bindings. `ns` supplies custom and default namespace bindings, including prefixes used inside opaque attribute values. Keyword attributes use `attr_ns`. `prefix__name` selects an explicit prefix and `attrs_` accepts literal names. A trailing underscore escapes Python keywords, as in `e.del_()`.
 
-Factory attributes are serialized as XML text values. Booleans become `true` or `false`, and `None` attributes are omitted. Construction checks XML names, namespaces and characters. `.bytes()` serializes the expression without adding formatting whitespace.
+Factory attributes are serialized as XML text values. Booleans become `true` or `false` (`on` or `off` for attributes identified by native enum metadata), and `None` attributes are omitted. Construction checks XML names, namespaces and characters. `.bytes()` serializes the expression for insertion, declaring every binding including an empty default namespace; `str(expression)` is the standalone document form.
 
-`parent(expression)` attaches one expression in one native edit and returns its new typed child. It places the child after others in its schema slot and before later slots, preserving existing order. Cached slots distinguish ordered sequences from unordered or repeatable content groups. Schema placement belongs to oxml's live parent API.
+`parent(expression)` attaches one expression and returns its new typed child. It places the child after others in its schema slot and before later slots. Siblings out of schema order are sorted first, keeping the relative order within a slot and the positions of text, comments and processing instructions, and the new subtree is sorted the same way once inserted. Copying, placement and sorting share one native edit; a live source element is copied without serialization and reparsing. `element.reorder()` runs that sort alone. `reorder(deep=True)` sorts every descendant whose children can all be ranked and leaves the others untouched, while the element itself must be rankable. Cached slots distinguish ordered sequences from unordered or repeatable content groups. Document helpers share the insertion-position rules; raw XML insertion and `copy_to()` retain explicit order.
 
-Automatic placement requires an unambiguous slot and existing children in known schema order. Unknown children, wildcard models and ambiguous positions require `parent(expression, index=n)`. The explicit index counts every XML child node, including text, comments and processing instructions. It also supports untyped XML and deliberately invalid fixtures. Attachment runs the native XML and resource checks.
+Automatic placement requires an unambiguous slot for the new child and for every existing child. Unknown children, wildcard models and ambiguous positions require `parent(expression, index=n)`. The explicit index counts every XML child node, including text, comments and processing instructions. It also supports untyped XML and deliberately invalid fixtures. Attachment runs the native XML and resource checks. Placement and `reorder()` errors name the cause: the element without a schema type, the type without a content model, or the child without a slot. A standalone root whose name belongs to several SDK types takes the one with a content model when exactly one has it, so `Tree(e.style(...))` is a `Style`; otherwise the error lists the candidates.
+
+`element.index` is an element's position in its parent's XML child-node sequence, so `parent(expression, index=sibling.index)` inserts before a sibling and `element.move_to(parent, sibling.index + 1)` moves after one. `element.elements(cls)` yields typed descendant views, like `Tree.elements` scoped to one element. `element.set_attribute(uri, local, value)` declares an unbound namespace with the SDK's prefix for it, and typed attribute setters do the same.
+
+`Tree.count(cls=Element)` uses native traversal and the same contextual type matching as `Tree.elements`, including the root when it matches. It does not materialize matching IDs or Python views, and reflects the current tree after edits. `element.child(cls)` also looks up direct children natively, returning one typed view or `None`, and rejecting duplicates. Use unpacking for exactly-one assertions rather than counting a materialized iterator.
 
 ## Editing and preservation contracts
 
@@ -54,7 +59,7 @@ Automatic placement requires an unambiguous slot and existing children in known 
 
 Edits preflight the affected nodes, mutate live storage and invalidate cached serialization. Bytes are serialized when requested. The editing API has no transaction rollback.
 
-Node IDs survive unrelated edits and movement. Copies allocate new IDs. Deletion or replacement invalidates subtree IDs permanently. A typed view checks its contextual type natively. Reacquire the view if a move changes that type. `element.raw` produces an immutable node snapshot on demand. `Element.qname` returns the expanded `(namespace_uri, local_name)` pair. It and `Element.attribute` use scalar native getters.
+Node IDs survive unrelated edits and movement. Copies allocate new IDs. Deletion or replacement invalidates subtree IDs permanently. A typed view checks its contextual type natively. Reacquire the view if a move changes that type. `element.raw` produces an immutable node snapshot on demand. `element.bytes()` serializes its subtree, declaring the namespaces it needs, and `str(element)` is the same text. Its repr shows only its type and node ID, without serializing content. `Element.qname` returns the expanded `(namespace_uri, local_name)` pair. It and `Element.attribute` use scalar native getters.
 
 `copy_to(parent, index=None)` copies XML within or across trees. The default index is the parent's raw child count. Cross-tree copies transfer native subtrees with their namespace context, without serialization and reparsing. Both copies and construction snapshots retain relationship and document IDs unchanged. Use `import_content` for supported package-dependency transfer and ID remapping. `move_to(parent, index)` moves an element within one tree.
 
@@ -91,11 +96,11 @@ Ordinary setters operate on the affected nodes. Namespace changes and structural
 
 ### Text ranges
 
-`doc.story.find(text)` searches literal text across runs. `doc.stories(view=...)` yields each reachable main, header, footer, individual note and comment story, including note separators. Each story carries its owning `part_uri`.
+`doc.story.find(text)` searches literal text across runs. `range.paragraph` is the paragraph element containing a range; a range spanning paragraphs or an opaque structure has none and raises. `doc.stories(view=...)` yields each reachable main, header, footer, individual note and comment story, including note separators. Each story carries its owning `part_uri`.
 
 Stories use Python Unicode positions, `\n` between visible paragraph boundaries, `\t` for tabs, `\v` for line breaks and U+FFFC for unsupported structures. Bookmarks, comment anchors/references and annotation labels have zero width. Current and original views select insertion/deletion text and paragraph boundaries while leaving stored XML unchanged. `Story(element, view='original')` provides a read-only original view. Every edit to a story's XML tree invalidates its ranges.
 
-Ordinary text beside revisions remains editable. Range editing protects revision payloads, property-history runs and hyperlinks. Fields, content controls, textboxes, moves and revised table containers are outside its supported scope. Replacement text takes the first affected run's formatting. A caret insertion uses an ordinary neighboring run's formatting.
+Ordinary text beside revisions remains editable. Range editing protects revision payloads, property-history runs and hyperlinks. Fields in either form read alike: markers are zero width and the cached result is text, a field without one reads as U+FFFC, and comment, footnote and endnote marks are zero width too. A range may lie inside a result or contain a whole field, never cross its boundary, and an edit touching a simple field first rewrites it in the complex form, as Word does. A field that continues in a later paragraph keeps its tail opaque. Content controls, textboxes, moves and revised table containers are outside its supported scope. Replacement text takes the first affected run's formatting. A caret insertion uses an ordinary neighboring run's formatting.
 
 Run isolation splits boundaries and retains references unless the caller explicitly requests their extraction. Text replacement retains enclosing anchors and collapses interior anchors to the replacement's end. Hyperlink insertion moves the selected XML slice together, preserving interior marker positions.
 
@@ -109,7 +114,7 @@ Comments support plain-text bodies, main-story anchors, replies and per-comment 
 
 ### Tracked changes
 
-`doc.revisions` exposes inline insertions/deletions, paragraph-boundary changes and run/paragraph property histories. Each revision supports `accept()` and `reject()`. Applying either operation invalidates the revision handle. Bulk `accept_all()` and `reject_all()` preflight the whole story and refuse unsupported families. Use `Revisions(story)` for another explicit story.
+`doc.revisions` exposes inline insertions/deletions, paragraph-boundary changes and run/paragraph property histories, and lists them without checking whether they can be applied. Each revision supports `accept()` and `reject()`. Applying either operation invalidates the revision handle. Bulk `accept_all()` and `reject_all()` preflight the whole story before changing anything and refuse unsupported families. Use `Revisions(story)` for another explicit story.
 
 Tracked text edits emit `w:ins`, `w:del` and `w:delText`. Paragraph-boundary marks go in `pPr/rPr`. `doc.revisions.format(run, e.rPr(e.b()), author='Drafter')` records a direct formatting change with `rPrChange` or `pPrChange` snapshots. Its `.previous` and `.current` expose the properties. Paragraph history retains independent paragraph-mark and section properties.
 
@@ -119,13 +124,21 @@ Author/date metadata is explicit. Dates default to UTC and supplied dates must b
 
 `doc.styles` finds and creates styles, then applies references while retaining direct formatting.
 
+`doc.properties` reads and writes core properties by local name (`title`, `creator`, `lastModifiedBy`, `created`, ...), creating the core-properties part and its package relationship on first write without overwriting an occupied filename. Python converts datetimes to strings; Rust owns property names, namespaces and date-type markup. `doc.settings` maps flat values using native schema descriptors: on/off settings read as booleans (a bare element means `True`), while numeric and other settings retain their lexical strings. Setters validate before editing existing elements in place. Complex settings are excluded from the mapping and available through the live `doc.settings.root`. `doc.add_part(name)` creates a fresh declared part of that SDK kind, where `doc.part(name, create=True)` finds or creates the single one; `doc.package.relationship_id(source, target)` is the inverse of `relationship_part`.
+
+Field, REF, detached hyperlink, drawing and footnote-reference factories return native-backed `Element` views. Calling a live parent with one copies its native subtree directly. Embedding one in an `E` expression takes the usual construction-time XML snapshot.
+
 `doc.numbering.add([Level(), Level(format='lowerLetter')])` creates a multilevel list. Reuse the returned instance with `.apply(paragraph, level=...)` to continue it. `.restart(start=...)` creates a separate instance and leaves the original list unchanged.
 
 `Table.add(body, [['Clause', 'Response']], widths=[4000, 4000])` creates a rectangular table. `Table(element)` exposes rows, cells and row/column edits. Use `Story(cell)` for cell text. Structural operations refuse merged, offset or revised grids. Removal refuses cells containing bookmarks or comments.
 
-`doc.bookmarks.add(span, 'clause')` creates a bookmark with `.range` and `.remove()`. Its `.ref(text)` creates detached REF markup with a cached result.
+`doc.bookmarks.add(span, 'clause')` creates a bookmark with `.range` and `.remove()`. `doc.bookmarks.ref(name, text=None, switches='')` creates detached REF markup with a cached result, attachable with `paragraph(doc.bookmarks.ref('cap', '5.1', switches=r'\w \h'))`; the bookmark need not exist yet when `text` is given. `bookmark.ref(...)` is the same for an existing bookmark, defaulting `text` to its text. `field(instr, text, rpr=None)` builds any other simple field the same way, such as `SEQ` or `MERGEFIELD`, with a dirty flag so Word refreshes it. `bookmark_name(text)` turns any text into a Word-legal bookmark name. Bookmarks may enclose fields and other opaque content, since anchors have no width.
 
-`doc.hyperlinks.add(span, '#clause')` links existing formatted text to a bookmark. A URL instead creates an external link. `.remove()` unwraps the text and removes unused relationships in the owning part. Hyperlink text remains visible in the story but protected from range edits while wrapped.
+`doc.hyperlinks.add(span, '#clause')` links existing formatted text to a bookmark. A URL instead creates an external link. Assigning `.target` retargets a link to another URL or `#bookmark`, releasing an unused relationship. `.remove()` unwraps the text and removes unused relationships in the owning part. Hyperlink text remains visible in the story but protected from range edits while wrapped. `doc.hyperlinks.link(target, *children, part_uri=None)` builds a detached hyperlink for content under construction, allocating one relationship per URL and part, and `doc.hyperlinks.external_id(url)` returns just that id.
+
+`part.add_image(data, width=None, height=None, description='', content_type=None)` stores the bytes as a media part beside the main document, relates it from `part`, and returns detached `w:drawing` markup for a run. PNG, JPEG and GIF headers supply the content type, pixel size and resolution; other formats need `content_type` and both extents. One extent keeps the aspect ratio. `wp:docPr` ids count up from the highest in the package's stories and stay unique for the package's lifetime, so detached drawings can be attached later in any order.
+
+`doc.footnotes.add(span, content)` inserts a footnote reference after `span` and creates the note. `doc.footnotes.create(content)` creates the note alone, and `note.reference()` is the detached reference run to attach where the mark belongs. `content` is a string or block expressions. A note whose first block is not a paragraph gets an empty one first, every top-level paragraph without a style gets `FootnoteText`, and the first paragraph opens with Word's mark run and a space. The footnotes part is created on first use and always carries Word's two separator notes, and the `FootnoteText` and `FootnoteReference` styles are added when missing. `note.delete()` removes the note and every run referencing it. Separator notes are not listed by `doc.footnotes`, and `note.text` starts after the mark and its space.
 
 Style inheritance, displayed list counters, field evaluation and layout are left to the application reading the document.
 
@@ -147,13 +160,13 @@ Import remaps conflicting identifiers and preserves complete bookmark ranges. De
 
 `compare` matches stored text and direct run/paragraph properties, then returns a new document containing tracked differences. It preserves both originals and leaves equal opaque blocks untouched. Original metadata and revision-session bookkeeping are retained.
 
-Paragraph-count changes require uniform matching direct properties and a paragraph-only body apart from final section properties. Changed tables, sections, dependencies and unresolved revisions are refused. Move detection and comparison of rendered appearance are unsupported.
+Paragraphs align by text within each container, descending into paired tables whose properties, grids, rows and cell properties match. Each changed region is diffed by Unicode words with paragraph marks as tokens, so splits, joins, insertions and deletions come out of the same tracked replacement as ordinary edits. Inserted text is copied from the revised paragraph, fields included. A new paragraph takes its properties outright, and a retained one records a property history. Hyperlinks in changed paragraphs are rewritten as HYPERLINK fields first, so link targets compare like field instructions, and a changed instruction replaces the whole field. A bookmark copied with inserted text keeps its name and the older copy loses its markers. Changed table structure, sections, dependencies and unresolved revisions are refused. Move detection and comparison of rendered appearance are unsupported.
 
 ## Validation scope
 
 Run `doc.validate()` after editing. It walks reachable relationships, checks declared package constraints and part roots, and validates each recognized XML part once with its dependency and relationship context. Issues and skipped regions identify their part URI. `scope.part_uris` lists the XML parts checked. Missing targets and malformed secondary XML are reported as errors. Unknown extension payloads remain opaque.
 
-Reports mark validation as incomplete. Gaps include some regex syntax and list facets, versioned enum values, decimal precision rounding, legacy date/time fragments, particle filtering and semantic-rule families. Inspect the reported gaps alongside errors when deciding whether a document meets your requirements.
+Reports are plain dicts whose repr leads with the issue count and tallies gaps by family. They mark validation as incomplete. Gaps include some regex syntax and list facets, versioned enum values, decimal precision rounding, legacy date/time fragments, particle filtering and semantic-rule families. Inspect the reported gaps alongside errors when deciding whether a document meets your requirements.
 
 Standalone `Tree.validate(dependencies=...)` accepts a mapping from part names to live `Tree` objects. Malformed dependency XML fails at tree construction. `Document.validate()` reports malformed parts explicitly.
 

@@ -177,7 +177,7 @@ def test_delete_refuses_broken_modern_linkage_before_mutation():
 
 def test_delete_empty_classic_comment_and_refuse_external_story_anchors():
     doc = Document.open(FIXTURES.parent.parent/'crosspart/footer-contain-hyperlink.docx')
-    root = doc._part('WordprocessingCommentsPart', True).xml.root
+    root = doc.part('WordprocessingCommentsPart', True).xml.root
     root(e.comment(id='0', author='Jeremy'))
     assert doc.comments[0].delete() == 1 and not list(doc.comments)
     root(e.comment(id='1', author='Jeremy'))

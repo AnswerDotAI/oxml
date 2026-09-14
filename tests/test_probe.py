@@ -26,12 +26,20 @@ def test_whole_vocabulary_nominal_types_and_contextual_dispatch():
     assert w.Deleted is not w.DeletedRun
     inline = Tree(part('pandoc/track_changes_scrubbed_metadata.docx'))
     paragraph = Tree(part('pandoc/paragraph_insertion_deletion.docx'))
-    assert list(inline.elements(w.DeletedRun)) and not list(inline.elements(w.Deleted))
-    assert list(paragraph.elements(w.Deleted))
+    assert inline.count(w.DeletedRun) > 0 and inline.count(w.Deleted) == 0
+    assert paragraph.count(w.Deleted) > 0
     styles = Tree(part('sdk/simpleSdt.docx', 'word/styles.xml'))
     border, margin = next(styles.elements(w.BottomBorder)), next(styles.elements(w.BottomMargin))
     assert border.val is w.BorderValues.Single and border.size == 6
     assert margin.width == '0' and border.type_id != margin.type_id
+
+def test_native_element_count():
+    tree = Tree(f'<w:document xmlns:w="{W}" xmlns:x="urn:other"><w:body><!--ignored-->'
+                '<w:p><w:r><w:t>text</w:t></w:r></w:p><w:p/><x:p/></w:body></w:document>'.encode())
+    assert tree.count() == 7 and tree.count(w.Document) == 1
+    assert tree.count(w.Paragraph) == 2 and tree.count(w.Table) == 0
+    next(tree.elements(w.Paragraph)).delete()
+    assert tree.count() == 4 and tree.count(w.Paragraph) == 1
 
 def test_typed_raw_edit_preserves_unknown_content():
     original = part('sdk/mcdoc.docx')
@@ -121,7 +129,7 @@ def test_absent_required_attribute_before_its_availability():
 def test_imported_noninteger_number_validator_and_typed_setter(value):
     tree = Tree(f'<c:majorUnit xmlns:c="{metadata["namespaces"]["c"]}" val="{value}"/>'.encode())
     report = tree.validate()
-    assert not report['issues'] and not report['coverage']['gaps']
+    assert not report['issues'] and all(g.startswith('xsd:') for g in report['coverage']['gaps'])
     tree.root.val = value
     assert tree.root.val == value
     qualified = Tree(tree.bytes().replace(b' val=', b' c:val='))

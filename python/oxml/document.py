@@ -1,8 +1,8 @@
-"""Python conveniences over native package ownership and document operations."""
+'Python conveniences over native package ownership and document operations.'
 import json
 from pathlib import Path
 from . import _core
-from .model import Tree
+from .model import Report, Tree
 
 class Part:
     def __init__(self, native): self._native = native
@@ -14,6 +14,9 @@ class Part:
     def xml(self): return Tree._from_native(self._native.xml)
     def read_bytes(self): return self._native.read_bytes()
     def replace(self, data): return Part(self._native.replace(data))
+    def add_image(self, data, *, width=None, height=None, description='', content_type=None):
+        "Embed image bytes and return detached drawing XML; EMU sizes default to the image's own size at its resolution, and one given size keeps the aspect ratio"
+        return Tree._from_native(self._native.add_image(data, content_type, width, height, description)).root
 
 class Package:
     def __init__(self, data: bytes): self._native = _core.Package(data)
@@ -46,6 +49,7 @@ class Package:
         return self._native.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id)
 
     def remove_relationship(self, source_uri, relationship_id): self._native.remove_relationship(source_uri, relationship_id)
+    def relationship_id(self, source_uri, target_uri): return self._native.relationship_id(source_uri, target_uri)
     def bytes(self): return self._native.bytes()
     def save(self, path): self._native.save(str(path))
 
@@ -87,6 +91,10 @@ class Document:
     def hyperlinks(self):
         from .links import Hyperlinks
         return Hyperlinks(self.package, self.story)
+    @property
+    def footnotes(self):
+        from .footnotes import Footnotes
+        return Footnotes(self)
 
     def bytes(self): return self.package.bytes()
     def save(self, path): self.package.save(path)
@@ -95,9 +103,23 @@ class Document:
         "Set a native custom XML datastore by GUID, retaining other stores and existing properties."
         return Part(self.package._native.set_custom_xml(item_id, data, schema_uri))
 
-    def _part(self, name, create=False):
+    def part(self, name, create=False):
+        "Find a main-document related XML part by SDK name, optionally creating it."
         part = _core.declared_part(self.package._native, name, create)
         return None if part is None else Part(part)
+
+    def add_part(self, name):
+        "Create another main-document related XML part by SDK name, such as a second `HeaderPart`"
+        return Part(_core.add_declared_part(self.package._native, name))
+
+    @property
+    def properties(self):
+        from .properties import Properties
+        return Properties(self)
+    @property
+    def settings(self):
+        from .settings import Settings
+        return Settings(self)
 
     def stories(self, view='current'):
         from .text import Story
@@ -105,4 +127,4 @@ class Document:
             part = Part(native)
             yield Story(part.xml._element(node_id), view=view, part_uri=part.uri)
 
-    def validate(self, target='Microsoft365'): return json.loads(_core.validate_package(self.package._native, target))
+    def validate(self, target='Microsoft365'): return Report(json.loads(_core.validate_package(self.package._native, target)))

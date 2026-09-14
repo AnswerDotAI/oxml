@@ -1,7 +1,7 @@
 //! Imported part declarations: discovery, creation, stories and package validation.
 use crate::error::{Error, Result};
 use crate::package::{Package, PackageData, Part, Relationship};
-use crate::schema::{analyze_tree, arr, available, check_target, expanded, s, schema};
+use crate::schema::{analyze_tree, arr, available, check_target, expanded, prefix_of, s, schema};
 use crate::xml::{Document, Element, Name};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
@@ -58,19 +58,7 @@ pub fn declared_uri(package: &mut PackageData, name: &str, create: bool) -> Resu
     let uri = if let Some(relation) = relation {
         if relation.mode != "Internal" { return Err(Error::Invalid(format!("{name} must be an internal part"))); }
         package.relationship_target(&main, &relation.target)?
-    } else {
-        let base = format!("{}/{}", main.rsplit_once('/').map_or("", |(dir, _)| dir), s(&info["Target"]));
-        let names: HashSet<_> = package.part_names().into_iter().map(|n| n.to_lowercase()).collect();
-        let mut uri = format!("{base}.xml");
-        let mut number = 0;
-        while names.contains(&uri.to_lowercase()) { number += 1; uri = format!("{base}{number}.xml"); }
-        let prefix = schema()["namespaces"].as_object().unwrap().iter().find(|(_, value)| s(value) == expected.0).map_or("", |(prefix, _)| prefix);
-        let root = Element { name: Name { uri: expected.0.into(), local: expected.1.into(), prefix: prefix.into() },
-            attributes: Vec::new(), namespaces: vec![(prefix.into(), expected.0.into())] };
-        package.add_part(&uri, s(&info["ContentType"]), &Document::from_element(root).serialize()?)?;
-        package.add_relationship(&main, s(&info["RelationshipType"]), &uri, "Internal", None)?;
-        uri
-    };
+    } else { create_declared(package, &main, info, expected)? };
     let xml = package.load_xml(&uri)?;
     let doc = xml.read()?;
     let actual = &doc.node(doc.root)?.element().unwrap().name;
@@ -256,7 +244,13 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
             }
         }
     }
-    let (mut checked, mut semantic_checks, mut skipped) = (0_u64, 0_u64, Vec::new());
+    // XML loading already checks those payloads. Stream remaining archive entries without inflating them twice.
+    for (uri, error) in package.archive_errors() {
+        issues.push(json!({"rule_id":"archive-integrity","category":"package","severity":"error","node":null,"part_uri":uri,
+            "target":target,"expected":"readable payload with matching CRC and size","actual":error,"rule_provenance":{"source":"ZIP"}}));
+        incomplete.push(json!({"part_uri":uri,"error":error}));
+    }
+    let (mut checked, mut semantic_checks, mut xsd_checked, mut skipped) = (0_u64, 0_u64, 0_u64, Vec::new());
     for entry in &entries {
         let Some(xml) = trees.get(entry.uri.as_str()) else { continue; };
         let dependencies = part_index().paths.iter().filter_map(|&path| Some((path.to_string(), trees.get(dependency(&entries, &entry.uri, path)?)?.clone()))).collect();
@@ -269,11 +263,12 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
         }
         checked += report["coverage"]["schema_nodes_checked"].as_u64().unwrap();
         semantic_checks += report["coverage"]["semantic_checks"].as_u64().unwrap();
+        xsd_checked += report["coverage"]["xsd_roots_checked"].as_u64().unwrap();
         for mut region in report["coverage"]["skipped_regions"].as_array_mut().unwrap().drain(..) { region["part_uri"] = entry.uri.clone().into(); skipped.push(region); }
         gaps.extend(arr(&report["coverage"]["gaps"]).iter().map(|g| s(g).to_string()));
     }
     Ok(json!({"issues":issues,"target":target,"source":schema()["source"],"scope":{"part_uris":scope},
-        "coverage":{"schema_nodes_checked":checked,"semantic_checks":semantic_checks,"skipped_regions":skipped,"complete":false,
+        "coverage":{"schema_nodes_checked":checked,"semantic_checks":semantic_checks,"xsd_roots_checked":xsd_checked,"skipped_regions":skipped,"complete":false,
             "gaps":gaps,"incomplete_dependencies":incomplete}}))
 }
 
@@ -294,4 +289,30 @@ pub fn package_stories(package: &Package) -> Result<Vec<(Part, usize)>> {
 #[pyo3(signature=(package, target="Microsoft365"))]
 pub fn validate_package(py: Python<'_>, package: &Package, target: &str) -> Result<String> {
     py.detach(|| validate(&mut *package.lock()?, target).map(|report| report.to_string()))
+}
+
+fn create_declared(package: &mut PackageData, main: &str, info: &Value, expected: (&str, &str)) -> Result<String> {
+    let base = format!("{}/{}", main.rsplit_once('/').map_or("", |(dir, _)| dir), s(&info["Target"]));
+    let names: HashSet<_> = package.part_names().into_iter().map(|n| n.to_lowercase()).collect();
+    let mut uri = format!("{base}.xml");
+    let mut number = 0;
+    while names.contains(&uri.to_lowercase()) { number += 1; uri = format!("{base}{number}.xml"); }
+    let prefix = prefix_of(expected.0);
+    let root = Element { name: Name { uri: expected.0.into(), local: expected.1.into(), prefix: prefix.into() },
+        attributes: Vec::new(), namespaces: vec![(prefix.into(), expected.0.into())] };
+    package.add_part(&uri, s(&info["ContentType"]), &Document::from_element(root).serialize()?)?;
+    package.add_relationship(main, s(&info["RelationshipType"]), &uri, "Internal", None)?;
+    Ok(uri)
+}
+
+#[pyfunction]
+pub fn add_declared_part(package: &Package, name: &str) -> Result<Part> {
+    let info = part(Some(name));
+    if info.is_null() { return Err(Error::Invalid(format!("Unknown declared part {name}"))); }
+    let uri = {
+        let mut guard = package.lock()?;
+        let main = guard.main_part().to_string();
+        create_declared(&mut guard, &main, info, part_root(name)?)?
+    };
+    package.part(&uri)
 }

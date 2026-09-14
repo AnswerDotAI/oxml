@@ -13,7 +13,7 @@ FIXTURE = Path(__file__).parent/'fixtures/body/char_styles.docx'
 # original char_styles.docx retains its independent character-style/direct-formatting combinations.
 def test_create_find_apply_styles_with_relocated_part_and_direct_overrides(tmp_path):
     doc = Document.open(FIXTURE)
-    old = doc._part('StyleDefinitionsPart')
+    old = doc.part('StyleDefinitionsPart')
     rel, = [r for r in doc.package.relationships(doc.main.uri) if doc.package.relationship_part(doc.main.uri, r['id']) == old.uri]
     doc.package.add_part('/custom/styles.xml', old.content_type, old.read_bytes())
     doc.package.remove_part(old.uri)
@@ -52,7 +52,7 @@ def test_style_creation_collision_and_refusals():
     paragraph = doc.main.xml.root.children[0](e.p(e.r(e.t('Text'))))
     styles = Styles(doc)
     style = styles.add('Body')
-    assert doc._part('StyleDefinitionsPart').uri != '/word/styles.xml'
+    assert doc.part('StyleDefinitionsPart').uri != '/word/styles.xml'
     style.apply(paragraph)
     before = doc.bytes()
     style.apply(paragraph)

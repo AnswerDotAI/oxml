@@ -1,8 +1,7 @@
-"""Inline review endpoints, with independent XML checks and unchanged real DOCX inputs."""
+'Inline review endpoints, with independent XML checks and unchanged real DOCX inputs.'
 from datetime import datetime, timezone
 from pathlib import Path
-import xml.etree.ElementTree as ET
-import pytest
+import xml.etree.ElementTree as ET, pytest
 from oxml import Document, e, Tree, w, Story, Revisions
 from corpus_helpers import parts
 
@@ -12,7 +11,7 @@ DATE = datetime(2026, 9, 13, 10, 30, tzinfo=timezone.utc)
 
 def run_text(run):
     return ''.join(e.text or '' if e.tag in {W+'t', W+'delText'} else '\t' if e.tag == W+'tab' else '\v'
-                   for e in run if e.tag in {W+'t', W+'delText', W+'tab', W+'br', W+'cr'})
+        for e in run if e.tag in {W+'t', W+'delText', W+'tab', W+'br', W+'cr'})
 
 def test_respond_to_existing_review_without_consuming_earlier_changes(tmp_path):
     doc = Document.open(FIXTURES/'pandoc/track_changes_scrubbed_metadata.docx')
@@ -61,9 +60,7 @@ def test_existing_pandoc_revision_endpoints(accept, word, tmp_path):
 def test_tracked_replacement_across_formatted_runs(accept):
     doc = Document.new()
     body = next(doc.main.xml.elements(w.Body))
-    paragraph = body(e.p(e.bookmarkStart(id='0', name='retained'),
-        e.r(e.rPr(e.b()), e.t('alpha be')),
-        e.r(e.rPr(e.i()), e.t('ta gamma')),
+    paragraph = body(e.p(e.bookmarkStart(id='0', name='retained'), e.r(e.rPr(e.b()), e.t('alpha be')), e.r(e.rPr(e.i()), e.t('ta gamma')),
         e.bookmarkEnd(id='0')))
     story = Story(paragraph)
     revisions = Revisions(story)
@@ -77,7 +74,7 @@ def test_tracked_replacement_across_formatted_runs(accept):
     root = ET.fromstring(doc.main.read_bytes()).find('.//'+W+'p')
     runs = [(run_text(r), 'bold' if r.find(W+'rPr/'+W+'b') is not None else 'italic') for r in root.findall(W+'r')]
     assert runs == ([('alpha ', 'bold'), ('B\tC\vD', 'bold'), (' gamma', 'italic')] if accept else
-                    [('alpha ', 'bold'), ('be', 'bold'), ('ta', 'italic'), (' gamma', 'italic')])
+        [('alpha ', 'bold'), ('be', 'bold'), ('ta', 'italic'), (' gamma', 'italic')])
     assert root[0].tag == W+'bookmarkStart' and root[-1].tag == W+'bookmarkEnd'
     with pytest.raises(ReferenceError): _ = deletion.text
 
@@ -95,6 +92,7 @@ def test_unsupported_move_revisions_do_not_mutate():
     doc = Document.open(FIXTURES/'reviews/pandoc/track_changes_move.docx')
     original = doc.bytes()
     revisions = Revisions(Story(doc.main.xml.root))
+    assert {r.kind for r in revisions} >= {'moveFrom', 'moveTo'}  # Listing never preflights acceptance.
     for operation in (revisions.accept_all, revisions.reject_all):
         with pytest.raises(NotImplementedError): operation()
         assert doc.bytes() == original
@@ -115,6 +113,7 @@ def test_bulk_preflight_and_invalid_new_metadata():
     nested = e.del_(good, id='2', author='Reviewer')
     tree = Tree(e.body(e.p(good), e.p(nested)).bytes())
     original = tree.bytes()
+    assert [r.kind for r in Revisions(Story(tree.root))] == ['ins', 'del']  # Listing never preflights acceptance.
     for operation in (Revisions(Story(tree.root)).accept_all, Revisions(Story(tree.root)).reject_all):
         with pytest.raises(NotImplementedError): operation()
         assert tree.bytes() == original
@@ -125,8 +124,7 @@ def test_bulk_preflight_and_invalid_new_metadata():
 
 def test_creation_inside_revision_marked_cell_is_refused():
     # PowerTools RP034/RP035 use cellDel/cellIns in tcPr: editing text must not silently treat that cell as ordinary.
-    tree = Tree(e.tbl(e.tr(e.tc(e.tcPr(e.cellDel(id='0', author='Reviewer')),
-        e.p(e.r(e.t('abc')))))).bytes())
+    tree = Tree(e.tbl(e.tr(e.tc(e.tcPr(e.cellDel(id='0', author='Reviewer')), e.p(e.r(e.t('abc')))))).bytes())
     story, original = Story(next(tree.elements(w.Paragraph))), tree.bytes()
     with pytest.raises(NotImplementedError): Revisions(story).replace(story.find('b'), 'x', author='Reviewer', date=DATE)
     assert tree.bytes() == original

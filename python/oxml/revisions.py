@@ -1,6 +1,7 @@
 """Thin Python access to native tracked text, paragraph and formatting operations."""
 from . import _core
 from ._dates import lexical
+from .build import _bytes
 from .text import Story, Range
 from .model import namespace_uris
 
@@ -48,8 +49,9 @@ class Revisions:
     def reject_all(self): return _core.revisions_apply(self.story._native, False)
 
     def format(self, target, properties, *, author, date=None):
-        from .formatting import create
-        return Revision(create(self.story, target, properties, author=author, date=date))
+        if not self.story.element._tree.xml.same_state(target._tree.xml): raise ValueError('Target is outside this story')
+        id = _core.revisions_format(self.story._native, target.node_id, _bytes(properties), author, lexical(date))
+        return Revision(target._tree._element(id))
 
     def replace(self, span, text, *, author, date=None):
         if not isinstance(span, Range): raise TypeError('Expected a text Range')

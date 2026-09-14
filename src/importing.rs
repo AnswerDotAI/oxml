@@ -105,7 +105,7 @@ impl<'a> Import<'a> {
         for (uri, root) in story_nodes(operation.destination)? {
             let xml = operation.destination.load_xml(&uri)?;
             let doc = xml.read()?;
-            for id in text::descendants(&doc, root) {
+            for id in doc.descendants(root)? {
                 let e = doc.node(id)?.element().unwrap();
                 if e.name.uri == W && matches!(e.name.local.as_str(), "bookmarkStart" | "bookmarkEnd") {
                     operation.ids.entry("bookmark").or_default().insert(integer(e.attribute(W, "id"), 10)?);
@@ -138,8 +138,7 @@ impl<'a> Import<'a> {
     }
 
     fn copy(&mut self, source: &Document, id: usize, kind: Kind) -> Result<usize> {
-        let mut doc = Document::from_element(source.node(id)?.element().ok_or_else(|| invalid("Expected an XML element"))?.clone());
-        for &child in &source.node(id)?.children { doc.import(source, child, Some(doc.root))?; }
+        let mut doc = source.subtree(id)?;
         inherit_ignorable(source, id, &mut doc)?;
         let entry = self.entries.len();
         self.entries.push(Entry { kind, doc });

@@ -1,9 +1,11 @@
-"""Real Python package/editor integration; no Office interoperability claim."""
+'Real Python package/editor integration; no Office interoperability claim.'
 from pathlib import Path
 from zipfile import ZipFile
 from io import BytesIO
-import pytest
-from oxml import Document, Tree, w
+from datetime import datetime, timezone
+import pytest, struct, zlib
+from oxml import Document, Tree, e, w, namespace_uris
+from xml.etree.ElementTree import fromstring
 from corpus_helpers import parts
 
 FIXTURES = Path(__file__).parent/'fixtures'
@@ -50,9 +52,45 @@ def test_new_document_structural_edits_preserve_live_handles(tmp_path):
     assert paragraph.node_id and text.value == 'two'
     text.replace(b'<w:t>replacement</w:t>')
     with pytest.raises(ReferenceError): _ = text.value
+    paragraph.paragraph_id = '0000000A'
+    assert paragraph.attribute(namespace_uris['w14'], 'paraId') == '0000000A' and b'w14:paraId="0000000A"' in doc.main.read_bytes()
+    assert ('w14', namespace_uris['w14']) in doc.main.xml.root.raw['namespaces']  # Declared once, at the root.
+    second = body(e.p(e.r(e.t('before'))), index=paragraph.index)
+    assert [p.index for p in body.elements(w.Paragraph)] == [0, 1] and second.index == 0
+    paragraph.move_to(body, second.index)
+    assert [next(p.elements(w.Text)).value for p in body.elements(w.Paragraph)] == ['replacement', 'before']
+    headers = [doc.add_part('HeaderPart') for _ in range(2)]
+    assert len({h.uri for h in headers}) == 2
+    with pytest.raises(ValueError, match='Ambiguous'): doc.part('HeaderPart')
+    assert doc.package.relationship_part(doc.main.uri, doc.package.relationship_id(doc.main.uri, headers[1].uri)) == headers[1].uri
+    doc.properties.update(title='Agreement', creator='Drafter')
+    assert dict(doc.properties) == {'title': 'Agreement', 'creator': 'Drafter'} and '/docProps/core.xml' in doc.package.part_names()
+    doc.properties['title'] = 'Services agreement'
+    del doc.properties['creator']
+    doc.properties['created'] = datetime(2026, 9, 14, tzinfo=timezone.utc)
+    assert doc.properties['created'] == '2026-09-14T00:00:00+00:00'
+    assert not doc.validate()['issues']
     output = tmp_path/'new.docx'
     doc.save(output)
     assert next(Document.open(output).main.xml.elements(w.Text)).value == 'replacement'
+
+def test_embed_image_preserves_existing_media_and_uses_owning_part_relationships():
+    doc = Document.open(FIXTURES/'crosspart/headerPic.docx')
+    image = doc.package.read_part('/word/media/image1.jpeg')
+    before = parts(doc)
+    for index, part in enumerate((doc.main, doc.package.part('/word/header1.xml')), 10):
+        drawing = part.add_image(image, width=914400, height=457200, description='A <picture> & caption')
+        markup = fromstring(drawing._tree.bytes())
+        assert markup.find('.//wp:extent', namespace_uris).attrib == dict(cx='914400', cy='457200')
+        assert markup.find('.//wp:docPr', namespace_uris).get('descr') == 'A <picture> & caption'
+        rid = markup.find('.//a:blip', namespace_uris).get(f"{{{namespace_uris['r']}}}embed")
+        uri = doc.package.relationship_part(part.uri, rid)
+        assert uri.lstrip('/') not in before and doc.package.read_part(uri) == image
+        next(part.xml.elements(w.Paragraph))(e.r(drawing))
+    result = Document.from_bytes(doc.bytes())
+    assert result.package.read_part('/word/media/image1.jpeg') == image
+    drawing, = result.main.xml.elements(w.Drawing)
+    assert result.package.part('/word/header1.xml').xml.count(w.Drawing) == 2
 
 def test_part_replacement_and_removal_invalidate_old_xml_handles():
     doc = Document.new()
@@ -146,3 +184,49 @@ def test_many_typed_edits_share_live_nodes_without_rebuilding_document_views():
         assert text.value == str(i) and text.node_id == identity and snapshot['text'] == 'before'
     reopened = Document.from_bytes(doc.bytes())
     assert [text.value for text in reopened.main.xml.elements(w.Text)] == [str(i) for i in range(2000)]
+
+def test_validation_report_summarises_itself():
+    report = Document.new().validate()
+    assert report['issues'] == [] and repr(report).startswith('Report: 0 issues')
+    report['coverage']['gaps'] = ['pattern:a', 'pattern:b', 'enum:c']
+    assert '3 gaps (pattern 2, enum 1)' in repr(report)
+
+def test_settings_mapping_creates_and_replaces_flat_values():
+    doc = Document.new()
+    doc.settings['updateFields'] = True
+    doc.settings['defaultTabStop'] = 720
+    assert doc.settings['updateFields'] is True and doc.settings['defaultTabStop'] == '720'
+    doc.settings['updateFields'] = False
+    assert doc.settings['updateFields'] is False
+    assert [n for n in doc.settings if n in ('updateFields', 'defaultTabStop')] == ['defaultTabStop', 'updateFields']
+    doc.settings['defaultTabStop'] = 1
+    with pytest.raises(ValueError): doc.settings['defaultTabStop'] = True
+    assert doc.settings['defaultTabStop'] == '1'
+    compat = doc.settings.root(e.compat())
+    with pytest.raises(NotImplementedError, match='settings.root'): _ = doc.settings['compat']
+    assert 'compat' not in list(doc.settings) and compat.parent.node_id == doc.settings.root.node_id
+    del doc.settings['defaultTabStop']
+    assert 'defaultTabStop' not in doc.settings and not doc.validate()['issues']
+
+def test_images_are_sniffed_sized_and_numbered():
+    def png(width, height, dpi=None):
+        def chunk(kind, body): return struct.pack('>I', len(body)) + kind + body + struct.pack('>I', zlib.crc32(kind + body))
+        physical = chunk(b'pHYs', struct.pack('>IIB', round(dpi / 0.0254), round(dpi / 0.0254), 1)) if dpi else b''
+        rows = zlib.compress(b''.join(b'\0' * (1 + 3 * width) for _ in range(height)))
+        return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) + physical + chunk(b'IDAT', rows) + chunk(b'IEND', b'')
+    doc = Document.new()
+    body = next(doc.main.xml.elements(w.Body))
+    facts = []
+    for data, sizes in ((png(4, 2), {}), (png(4, 2, dpi=192), {}), (png(4, 2), dict(width=914400))):
+        drawing = doc.main.add_image(data, **sizes)
+        markup = fromstring(drawing._tree.bytes())
+        extent = markup.find('.//wp:extent', namespace_uris)
+        facts.append((int(extent.get('cx')), int(extent.get('cy')), markup.find('.//wp:docPr', namespace_uris).get('id')))
+        body(e.p(e.r(drawing)))
+    assert facts == [(38100, 19050, '1'), (19050, 9525, '2'), (914400, 457200, '3')]
+    embed = markup.find('.//a:blip', namespace_uris).get(f"{{{namespace_uris['r']}}}embed")
+    assert doc.package.content_type(doc.package.relationship_part(doc.main.uri, embed)) == 'image/png'
+    reopened = Document.from_bytes(doc.bytes())
+    again = fromstring(reopened.main.add_image(png(1, 1))._tree.bytes())
+    assert again.find('.//wp:docPr', namespace_uris).get('id') == '4' and not reopened.validate()['issues']
+    with pytest.raises(ValueError, match='content_type'): doc.main.add_image(b'not an image')

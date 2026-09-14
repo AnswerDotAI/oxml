@@ -24,7 +24,7 @@ def test_styles_and_real_table_import_preserve_destination_definitions_and_sourc
     selected = [p for p in source.main.xml.elements(w.Paragraph) if any(e.tag == W+'rStyle' for e in xml(p).iter())]
     copied = import_content(source, selected, destination, body(destination))
     assert copied and source.bytes() == before_source
-    old, new = ET.fromstring(before['word/styles.xml']), ET.fromstring(destination._part('StyleDefinitionsPart').read_bytes())
+    old, new = ET.fromstring(before['word/styles.xml']), ET.fromstring(destination.part('StyleDefinitionsPart').read_bytes())
     assert [ET.tostring(e) for e in old] == [ET.tostring(e) for e in new[:len(old)]]
     added = {e.get(W+'styleId'): e for e in new[len(old):]}
     assert added and set(added).isdisjoint(e.get(W+'styleId') for e in old)
@@ -58,13 +58,13 @@ def test_numbering_dependency_cycles_and_instance_dedup_keep_real_restart_overri
         if child.raw['qname'][1] in {'bookmarkStart', 'bookmarkEnd'}: child.delete()
     instance = source.numbering[2]
     # A numbering-style dependency cycle must import once, not recurse forever or lose its reference.
-    root = source._part('StyleDefinitionsPart').xml.root
+    root = source.part('StyleDefinitionsPart').xml.root
     root(e.style(e.name(val='ListLink'), e.pPr(e.numPr(e.numId(val='2'))), type='numbering', styleId='ListLink'))
     instance.definition(e.styleLink(val='ListLink'))
-    before_source, before = source.bytes(), ET.fromstring(destination._part('NumberingDefinitionsPart').read_bytes())
+    before_source, before = source.bytes(), ET.fromstring(destination.part('NumberingDefinitionsPart').read_bytes())
     copied = import_content(source, [selected, duplicate], destination, body(destination))
     assert source.bytes() == before_source
-    after = ET.fromstring(destination._part('NumberingDefinitionsPart').read_bytes())
+    after = ET.fromstring(destination.part('NumberingDefinitionsPart').read_bytes())
     assert len(after.findall(W+'num')) == 7 and len(after.findall(W+'abstractNum')) == 7
     for kind in ('num', 'abstractNum'):
         assert [ET.tostring(e) for e in before.findall(W+kind)] == [ET.tostring(e) for e in after.findall(W+kind)[:6]]

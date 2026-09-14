@@ -1,6 +1,8 @@
-"""Thin bookmark and hyperlink views; native code owns anchoring and relationships."""
+'Thin bookmark and hyperlink views; native code owns anchoring and relationships.'
+from fastcore.xml import _xml_flatten
 from . import _core
-from .build import _Snapshot
+from ._core import bookmark_name
+from .build import _bytes
 from .model import Tree
 from .text import Range
 
@@ -19,6 +21,10 @@ class Bookmarks:
 
     def add(self, span, name): return Bookmark(self, self._native.add(span._native, name))
 
+    def ref(self, name, text=None, switches=''):
+        "Detached `REF` field for bookmark `name`, which need not exist yet when `text` supplies the cached result"
+        return Tree._from_native(self._native.reference(name, text, switches)).root
+
 class Bookmark:
     def __init__(self, bookmarks, native): self.bookmarks, self._native = bookmarks, native
     @property
@@ -31,7 +37,9 @@ class Bookmark:
     def range(self): return Range._from_native(self._native.range, self.bookmarks.story.part_uri)
 
     def remove(self): self._native.remove()
-    def ref(self, text=None): return _Snapshot(Tree._from_native(self._native.reference(text)).root)
+    def ref(self, text=None, switches=''):
+        "Detached `REF` field showing `text` (default: the bookmarked text) with optional field switches such as `\\w \\h`"
+        return Tree._from_native(self._native.reference(text, switches)).root
 
 class Hyperlinks:
     def __init__(self, package, story):
@@ -40,6 +48,10 @@ class Hyperlinks:
 
     def __iter__(self): return (Hyperlink(self, native) for native in self._native.items())
     def add(self, span, target): return Hyperlink(self, self._native.add(span._native, target))
+
+    def link(self, target, *children, part_uri=None):
+        "Detached `w:hyperlink` around `children`: a `#bookmark` anchor, or a URL whose relationship is allocated once per part, the story's unless `part_uri`"
+        return Tree._from_native(self._native.build(target, [_bytes(c) for c in _xml_flatten(children)], part_uri)).root
 
 class Hyperlink:
     def __init__(self, hyperlinks, native): self.hyperlinks, self._native = hyperlinks, native
@@ -51,5 +63,7 @@ class Hyperlink:
     def text(self): return self._native.text
     @property
     def target(self): return self._native.target
+    @target.setter
+    def target(self, value): self._native.target = value
 
     def remove(self): self._native.remove()

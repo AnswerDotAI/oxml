@@ -26,7 +26,7 @@ fn number(value: Option<&str>) -> Result<i64> {
     value.unwrap_or("").parse().map_err(|_| invalid("Invalid comment ID"))
 }
 fn last(doc: &Document, id: usize) -> Option<usize> {
-    text::descendants(doc, id).into_iter().filter(|&n| text::name(doc, n) == Some("p")).last()
+    doc.descendants(id).ok()?.filter(|&n| text::name(doc, n) == Some("p")).last()
 }
 fn para_key(doc: &Document, id: usize) -> String {
     last(doc, id).and_then(|p| attr(doc, p, W14, "paraId")).unwrap_or("").to_uppercase()
@@ -303,7 +303,7 @@ impl Comments {
         if !main.same_state(&span.story.xml) {
             return Err(invalid("Comment range must belong to this document main story"));
         }
-        let selected = span.selection(&*main.read()?)?;
+        let selected = span.selection(&*main.read()?, false)?;
         let comment = self.create(text, author, initials, date, None)?;
         let ident = comment.id()?.to_string();
         let (start, end, reference) = anchors(&ident)?;
@@ -580,7 +580,7 @@ impl Comment {
                     continue;
                 }
                 let doc = xml.read()?;
-                if text::descendants(&doc, element).into_iter().any(|id| selected_anchor(&doc, id)) {
+                if doc.descendants(element)?.any(|id| selected_anchor(&doc, id)) {
                     return Err(text::unsupported("Comment anchors outside the main part are unsupported"));
                 }
             }

@@ -47,7 +47,7 @@ def test_shared_relocated_footer_is_one_story_and_validated_once():
     before = doc.bytes()
     report = doc.validate()
     assert report['scope']['part_uris'].count(part.uri) == 1
-    assert [(i['rule_id'], i['node']) for i in report['issues'] if i['part_uri'] == part.uri] == [('child-particle', part.xml.root.node_id)]
+    assert [(i['rule_id'], i['node']) for i in report['issues'] if i['part_uri'] == part.uri and i['category'] == 'schema'] == [('child-particle', part.xml.root.node_id)]
     assert doc.bytes() == before
     part.replace(e.document(e.body()).bytes())  # Valid XML vocabulary, but the wrong root for a footer part.
     assert any(i['rule_id'] == 'part-root' and i['part_uri'] == part.uri for i in doc.validate()['issues'])

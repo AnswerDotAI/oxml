@@ -211,6 +211,9 @@ def test_failed_save_does_not_damage_source_or_destination(tmp_path):
     path = tmp_path / 'source.docx'
     path.write_bytes(source)
     package = Package(source)
+    from oxml import Document
+    report = Document.from_bytes(source).validate()
+    assert any(i['rule_id'] == 'archive-integrity' and i['part_uri'] == '/opaque.bin' for i in report['issues'])
     with pytest.raises(ValueError, match='checksum'): package.read_part('/opaque.bin')
     package.replace_part(package.main_part, b'<changed/>')
     with pytest.raises(ValueError, match='checksum'): package.save(str(path))

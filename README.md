@@ -16,11 +16,11 @@ Search works across text runs, so a phrase need not have uniform formatting. Rep
 
 `doc.story` is the main document text. `doc.stories()` also gives access to headers, footers, notes and comments. `Story(element, view='original')` reads the text before tracked changes without accepting or rejecting them.
 
-Replacement can split and join adjacent paragraphs using `\n`, but cannot cross section or table-cell boundaries. Bookmarks and comment anchors survive text edits. Fields, content controls and existing revision payloads are protected from ordinary text replacement.
+Replacement can split and join adjacent paragraphs using `\n`, but cannot cross section or table-cell boundaries. Bookmarks and comment anchors survive text edits. A replacement may change a field's cached result or remove a whole field, but cannot cross a field boundary. Content controls and existing revision payloads are protected from ordinary text replacement.
 
 ## Build and edit XML
 
-Use `Document.new()` to start a document, or `Tree(xml_bytes)` to work with standalone XML.
+Use `Document.new()` to start a document, or `Tree(xml)` for standalone XML, from bytes or a detached expression.
 
 ```python
 from oxml import Document, e, w
@@ -32,13 +32,15 @@ paragraph(e.pPr(e.jc(val='center')))
 doc.save('new.docx')
 ```
 
-`e.p(...)` builds a detached XML expression. Calling a live parent, such as `body(...)`, attaches it and returns the new live element. Placement follows the schema: paragraph properties go before runs, and paragraphs go before final section properties. Existing content is never rearranged. Use `parent(expression, index=n)` when you need an exact XML child-node position or the schema order is unknown.
+`e.p(...)` builds a detached XML expression. Calling a live parent, such as `body(...)`, attaches it and returns the new live element. Placement follows the schema: paragraph properties go before runs, and paragraphs go before final section properties. Children already in schema order stay where they are. Siblings out of schema order are first sorted into it, keeping the relative order of children that share a slot, and the attached expression's own descendants are sorted the same way. `element.reorder()` runs that sort on demand, and `reorder(deep=True)` sorts a whole subtree. Use `parent(expression, index=n)` when you need an exact XML child-node position or the schema order is unknown.
 
 The `e` factory supplies the `w` namespace for elements and attributes. For example, `e.tcW(type='dxa', w=2400)` creates a table-cell width. Other attribute prefixes use double underscores, such as `r__id` and `xml__space`. Configure another namespace with `E('a')`, or custom bindings with `E(ns=bindings)`.
 
 You can also work directly with typed elements. For example, `next(doc.main.xml.elements(w.Text)).value = 'Replacement'` changes one text node. Typed attributes check values against SDK rules and refuse constraints they cannot fully check. Raw XML editing remains available for those cases.
 
-The XML editor supports elements, attributes, text, comments and processing instructions, with namespace-aware copying and movement. It reads UTF-8 and UTF-16. Typed views and raw XML edits share the same live tree.
+Use `tree.count(w.Paragraph)` to count matching elements in Rust without constructing a list of Python views. `tree.count()` counts all elements; both forms include the root when it matches. To require exactly one match, unpack it: `body, = tree.elements(w.Body)`.
+
+The XML editor supports elements, attributes, text, comments and processing instructions, with namespace-aware copying and movement. `str(element)` shows any live element's XML. It reads UTF-8 and UTF-16. Typed views and raw XML edits share the same live tree.
 
 See [Editing and preservation contracts](DEV.md#editing-and-preservation-contracts) for copying, namespaces and raw XML operations.
 
@@ -75,12 +77,16 @@ Editing inside an existing revision requires accepting or rejecting it first. Ta
 * `doc.styles` finds, creates and applies paragraph, character and table styles without replacing direct formatting.
 * `doc.numbering` creates multilevel lists and controls continuation or restart.
 * `Table.add(...)` creates rectangular tables. `Table(element)` provides row and column edits. Structural edits do not support merged, offset or revised grids.
-* `doc.bookmarks` creates, finds and removes bookmarks and builds REF fields.
-* `doc.hyperlinks` adds and removes internal or external links while retaining the text's formatting. Linked text is protected from range edits until the link is removed.
+* `doc.bookmarks` creates, finds and removes bookmarks and builds REF fields with optional switches.
+* `doc.hyperlinks` adds and removes internal or external links, and retargets them through `link.target` while retaining the text's formatting. Linked text is protected from range edits until the link is removed. `doc.hyperlinks.link(url, *runs)` builds a detached link while constructing content.
+* `part.add_image(bytes)` embeds a picture and returns detached drawing markup for a run, sized from the image itself unless given EMU extents.
+* `doc.footnotes` creates footnotes from text or block expressions, marks them after live text or through a detached reference run, and removes them with their references.
 
 These helpers edit the document's XML. They do not calculate layout, inherited formatting, displayed list numbers or field results. Usage details are in [Document helpers](DEV.md#document-helpers).
 
 `doc.set_custom_xml(item_id, xml_bytes, schema_uri=...)` creates or replaces a custom XML datastore by GUID and returns its `Part`. It manages the property part and relationships while preserving unrelated stores. Content controls can refer to the GUID through `w:storeItemID`.
+
+`doc.properties` is a mapping over the core properties part (`title`, `creator`, `lastModifiedBy`, `created` and so on), created on first write. `doc.settings` is a native schema-aware mapping for flat settings: `updateFields` reads as a boolean, while values such as `defaultTabStop` read as strings. Use `doc.settings.root` for complex settings. `doc.add_part('HeaderPart')` creates another declared part related to the main document, and `doc.package.relationship_id(source, target)` finds the relationship id that a section or reference needs.
 
 ## Compare and import documents
 
@@ -94,7 +100,7 @@ redline = compare(Document.open('original.docx'),
 redline.save('comparison.docx')
 ```
 
-The originals stay unchanged, and equal tables and other opaque blocks are retained. Comparison supports body-text and direct-formatting changes. It refuses changes to tables, sections or dependencies, and documents with unresolved revisions. Changes to paragraph counts require matching direct paragraph properties and a paragraph-only body apart from final section properties.
+The originals stay unchanged, and equal tables and other opaque blocks are retained. Comparison supports body-text and direct-formatting changes. Paragraphs align by text, and each changed region is compared by Unicode words across run and paragraph boundaries, retaining whitespace, punctuation and each side's formatting, so paragraph splits, joins, insertions and deletions appear as paragraph-mark changes. Tables with the same grid compare cell by cell. Field results compare as text, and a changed field instruction replaces the whole field. Hyperlinks in changed paragraphs become HYPERLINK fields, as in Word, so a changed target replaces the whole link. A bookmark that arrives with inserted text keeps its name, and the copy left in deleted text loses it. Changed table structure, sections and other dependencies are refused, as are documents with unresolved revisions.
 
 `import_content(...)` copies selected paragraphs and tables between documents, including their style, numbering, image and hyperlink dependencies. It preserves complete bookmark ranges and remaps conflicting IDs without overwriting destination definitions. Destination themes and document defaults still apply. Content with reviews, fields, sections or unsupported package dependencies is refused. See [Import and compare](DEV.md#import-and-compare) for the detailed rules.
 

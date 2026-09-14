@@ -1,4 +1,4 @@
-"""Literal story/range workflows; independent XML assertions, no rendering assumptions."""
+'Literal story/range workflows; independent XML assertions, no rendering assumptions.'
 from pathlib import Path
 from xml.etree.ElementTree import fromstring
 from xml.dom.minidom import parseString
@@ -73,15 +73,39 @@ def test_isolation_preserves_run_xml_context_and_opaque_siblings():
     children = parseString(tree.bytes()).getElementsByTagNameNS(W, 'r')[0].childNodes
     assert [n.data for n in children if n.nodeType in (n.COMMENT_NODE, n.PROCESSING_INSTRUCTION_NODE)] == ['between', 'value']
 
-@pytest.mark.parametrize('unsupported', [e.fldSimple(e.r(e.t('result'))),
-    e.r(e.fldChar(fldCharType='begin')), e.sdt(e.sdtContent()),
-    e.r(e.drawing(e.txbxContent()))])
-def test_unsupported_paragraphs_refuse_before_mutation(unsupported):
-    doc, story = paragraph(e.r(e.t('safe')), unsupported)
-    assert story.text == 'safe\ufffc'
+@pytest.mark.parametrize('element,text', [(e.r(e.fldChar(fldCharType='begin')), 'safe'), (e.sdt(e.sdtContent()), 'safe￼'),
+    (e.r(e.drawing(e.txbxContent())), 'safe￼')])
+def test_unsupported_paragraphs_refuse_before_mutation(element, text):
+    doc, story = paragraph(e.r(e.t('safe')), element)
+    assert story.text == text
     original = doc.bytes()
-    with pytest.raises(NotImplementedError): story.range(0, 2).replace('changed')
+    with pytest.raises(NotImplementedError): story.range(2, len(story.text)).replace('changed')
     assert doc.bytes() == original
+
+def complex_field(instr, *result):
+    return (e.r(e.fldChar(fldCharType='begin')), e.r(e.instrText(instr, xml__space='preserve')),
+        e.r(e.fldChar(fldCharType='separate')), *result, e.r(e.fldChar(fldCharType='end')))
+
+@pytest.mark.parametrize('accept', [False, True])
+def test_fields_project_alike_and_edit_inside_results_or_as_a_whole(accept):
+    instr = ' REF Cap \\w \\h '
+    doc, story = paragraph(e.r(e.t('see clause ')), e.fldSimple(e.r(e.t('5.1')), instr=instr), e.r(e.t(' and ')),
+        *complex_field(instr, e.r(e.t('5.1'))), e.r(e.t(' twice')))
+    assert story.text == 'see clause 5.1 and 5.1 twice'
+    with pytest.raises(NotImplementedError): story.find('clause 5').replace('x')
+    story.find('5.1', 15).replace('4.4')
+    story.find('5.1').replace('4.4')
+    assert story.text == 'see clause 4.4 and 4.4 twice'
+    assert doc.main.xml.count(w.SimpleField) == 0 and doc.main.xml.count(w.FieldChar) == 6
+    assert [f.value for f in doc.main.xml.elements(w.FieldCode)] == [instr, instr]
+    doc.revisions.replace(story.find('clause 4.4 and'), 'now', author='Reviewer')
+    assert story.text == 'see now 4.4 twice'
+    assert Story(story.element, view='original').text == 'see clause 4.4 and 4.4 twice'
+    assert doc.main.xml.count(w.DeletedFieldCode) == 1 and doc.main.xml.count(w.FieldCode) == 1
+    doc.revisions.accept_all() if accept else doc.revisions.reject_all()
+    assert story.text == ('see now 4.4 twice' if accept else 'see clause 4.4 and 4.4 twice')
+    assert doc.main.xml.count(w.FieldChar) == (3 if accept else 6) and doc.main.xml.count(w.DeletedFieldCode) == 0
+    assert not doc.validate()['issues']
 
 def test_paragraph_and_opaque_boundaries_staleness_and_invalid_text_are_explicit():
     doc, first = paragraph(e.r(e.t('one')))
@@ -137,12 +161,9 @@ def test_real_current_original_views_edit_beside_reviews_and_keep_comment_anchor
     assert Document.open(output).story.text == doc.story.text
 
 def test_interior_markers_survive_replacement_and_hidden_revisions_remain_protected():
-    doc, story = paragraph(e.r(e.t('A')), e.commentRangeStart(id='7'),
-        e.r(e.t('BC'), e.commentReference(id='7'), e.t('D')),
-        e.bookmarkStart(id='8', name='inside'), e.r(e.t('EF')),
-        e.bookmarkEnd(id='8'), e.commentRangeEnd(id='7'), e.r(e.t('G')),
-        e.del_(e.r(e.delText('old')), id='9', author='a'), e.r(e.t('H')),
-        e.ins(e.r(e.t('NEW')), id='10', author='a'))
+    doc, story = paragraph(e.r(e.t('A')), e.commentRangeStart(id='7'), e.r(e.t('BC'), e.commentReference(id='7'), e.t('D')),
+        e.bookmarkStart(id='8', name='inside'), e.r(e.t('EF')), e.bookmarkEnd(id='8'), e.commentRangeEnd(id='7'), e.r(e.t('G')),
+        e.del_(e.r(e.delText('old')), id='9', author='a'), e.r(e.t('H')), e.ins(e.r(e.t('NEW')), id='10', author='a'))
     assert story.text == 'ABCDEFGHNEW'
     story.find('CDEF').replace('Z')
     assert story.text == 'ABZGHNEW' and Story(story.element, view='original').text == 'ABZGoldH'
@@ -155,3 +176,10 @@ def test_interior_markers_survive_replacement_and_hidden_revisions_remain_protec
     assert doc.bytes() == before
     story.range(4, 4).replace('?')
     assert story.text == 'ABZG?HNEW'
+
+def test_range_paragraph_is_the_containing_element():
+    doc = Document.new()
+    body = next(doc.main.xml.elements(w.Body))
+    first, second = body(e.p(e.r(e.t('alpha')))), body(e.p(e.r(e.t('beta'))))
+    assert doc.story.find('beta').paragraph.node_id == second.node_id and doc.story.find('alpha').paragraph.node_id == first.node_id
+    with pytest.raises(ValueError): doc.story.range(4, 7).paragraph

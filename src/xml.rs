@@ -22,7 +22,7 @@ fn stale() -> Error { Error::Stale("XML node or document is no longer live".into
 fn space(c: char) -> bool { matches!(c, ' ' | '\t' | '\n' | '\r') }
 fn normalize_eols(value: &str) -> String { value.replace("\r\n", "\n").replace('\r', "\n") }
 pub(crate) fn xml_char(c: char) -> bool { matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}') }
-fn check_value(value: &str) -> Result<()> {
+pub(crate) fn check_value(value: &str) -> Result<()> {
     if value.len() > MAX_BYTES { return Err(error("XML exceeds the 32 MiB limit")); }
     if !value.chars().all(xml_char) { return Err(error("Illegal XML character")); }
     Ok(())
@@ -80,7 +80,7 @@ fn escaped(value: &str, attribute: bool) -> String {
 #[derive(Clone, Debug)]
 pub struct Name { pub uri: String, pub local: String, pub prefix: String }
 impl Name {
-    fn lexical(&self) -> String { if self.prefix.is_empty() { self.local.clone() } else { format!("{}:{}", self.prefix, self.local) } }
+    pub(crate) fn lexical(&self) -> String { if self.prefix.is_empty() { self.local.clone() } else { format!("{}:{}", self.prefix, self.local) } }
     fn resolve(lexical: &str, namespaces: &[(String, String)], attribute: bool) -> Result<Self> {
         let (prefix, local) = lexical.split_once(':').unwrap_or(("", lexical));
         check_local(local)?;
@@ -221,7 +221,9 @@ impl Document {
         let mut prefix = preferred.to_string();
         let mut n = 1;
         while e.namespace(&prefix).is_some() { prefix = format!("{preferred}{n}"); n += 1; }
-        self.declare_namespace(id, &prefix, uri)?;
+        // A prefix unbound here is unbound along the whole path from the root, so one root declaration serves the document.
+        let root = self.root;
+        self.declare_namespace(root, &prefix, uri)?;
         Ok(prefix)
     }
     pub fn set_attribute_ns(&mut self, id: usize, uri: &str, local: &str, value: &str, preferred: &str) -> Result<String> {
@@ -300,16 +302,23 @@ impl Document {
         let NodeKind::Element(e) = &mut self.node_mut(id)?.kind else { unreachable!() };
         Ok(e)
     }
-    pub fn element_ids(&self) -> Vec<usize> {
-        let mut result = Vec::new();
-        let mut stack = self.children.iter().rev().copied().collect::<Vec<_>>();
-        while let Some(id) = stack.pop() {
-            let node = self.nodes[id].as_ref().unwrap();
-            if node.element().is_some() { result.push(id); }
-            stack.extend(node.children.iter().rev().copied());
-        }
-        result
+    pub fn element_children(&self, id: usize) -> Result<impl DoubleEndedIterator<Item = usize> + '_> {
+        Ok(self.node(id)?.children.iter().copied().filter(|&id| self.nodes[id].as_ref().unwrap().element().is_some()))
     }
+    /// Elements in document order, including the supplied root when it is an element.
+    pub fn descendants(&self, id: usize) -> Result<impl Iterator<Item = usize> + '_> {
+        self.node(id)?;
+        let mut stack = vec![id];
+        Ok(std::iter::from_fn(move || {
+            while let Some(id) = stack.pop() {
+                let node = self.nodes[id].as_ref().unwrap();
+                stack.extend(node.children.iter().rev().copied());
+                if node.element().is_some() { return Some(id); }
+            }
+            None
+        }))
+    }
+    pub fn element_ids(&self) -> Vec<usize> { self.descendants(self.root).expect("Document has a live root").collect() }
     pub(crate) fn sequence(&self, parent: Option<usize>) -> Result<&Vec<usize>> {
         match parent {
             Some(id) => {
@@ -708,6 +717,15 @@ impl Xml {
         doc.write_node(&mut writer, id, &[("xml".into(), XML_NS.into())])?;
         Ok(writer.into_inner())
     }
+    pub fn attach_document(&self, parent: usize, source: &Document, index: Option<usize>) -> Result<usize> {
+        let name = &source.node(source.root)?.element().ok_or_else(|| error("Expected an XML element"))?.name;
+        self.edit(|doc| {
+            let index = match index { Some(i) => i, None => crate::schema::insertion_position(doc, parent, &name.uri, &name.local)? };
+            let id = doc.import_at(source, source.root, parent, index)?;
+            crate::schema::reorder(doc, id, true, false)?;
+            Ok(id)
+        })
+    }
     pub(crate) fn set_read_only(&self, value: bool) { self.state.write().unwrap().read_only = value; }
     pub(crate) fn insert_fragment(doc: &mut Document, parent: Option<usize>, index: usize, data: &[u8], replacing: Option<usize>) -> Result<Vec<usize>> {
         if index > doc.sequence(parent)?.len() { return Err(Error::Index("XML content index out of range".into())); }
@@ -791,18 +809,30 @@ impl Xml {
     pub fn child_count(&self, id: usize) -> Result<usize> { Ok(self.read()?.node(id)?.children.len()) }
     pub fn element_children(&self, id: usize) -> Result<Vec<usize>> {
         let doc = self.read()?;
-        Ok(doc.node(id)?.children.iter().copied().filter(|id| doc.nodes[*id].as_ref().unwrap().element().is_some()).collect())
+        let children = doc.element_children(id)?;
+        Ok(children.collect())
     }
     pub fn parent(&self, id: usize) -> Result<Option<usize>> { Ok(self.read()?.node(id)?.parent) }
+    pub fn position(&self, id: usize) -> Result<(Option<usize>, usize)> { self.read()?.position(id) }
     pub fn set_text(&self, id: usize, value: &str) -> Result<()> { self.edit(|doc| doc.set_text(id, value)) }
     #[pyo3(signature=(id, uri, local, value, prefix=None))]
     pub fn set_attribute(&self, id: usize, uri: &str, local: &str, value: &str, prefix: Option<&str>) -> Result<()> { self.edit(|doc| doc.set_attribute(id, uri, local, value, prefix)) }
+    pub fn set_attribute_ns(&self, id: usize, uri: &str, local: &str, value: &str, preferred: &str) -> Result<String> { self.edit(|doc| doc.set_attribute_ns(id, uri, local, value, preferred)) }
     pub fn remove_attribute(&self, id: usize, uri: &str, local: &str) -> Result<()> { self.edit(|doc| doc.remove_attribute(id, uri, local)) }
     #[pyo3(signature=(id, uri, local, prefix=None))]
     pub fn rename(&self, id: usize, uri: &str, local: &str, prefix: Option<&str>) -> Result<()> { self.edit(|doc| doc.rename(id, uri, local, prefix)) }
     pub fn declare_namespace(&self, id: usize, prefix: &str, uri: &str) -> Result<()> { self.edit(|doc| doc.declare_namespace(id, prefix, uri)) }
     pub fn insert_xml(&self, parent: usize, index: usize, data: &[u8]) -> Result<Vec<usize>> {
         self.edit(|doc| Self::insert_fragment(doc, Some(parent), index, data, None))
+    }
+    #[pyo3(signature=(parent, data, index=None))]
+    pub fn attach_xml(&self, parent: usize, data: &[u8], index: Option<usize>) -> Result<usize> {
+        self.attach_document(parent, &parse_bytes(data)?, index)
+    }
+    #[pyo3(signature=(parent, source, id, index=None))]
+    pub fn attach_element(&self, parent: usize, source: &Xml, id: usize, index: Option<usize>) -> Result<usize> {
+        let source = source.read()?.subtree(id)?;
+        self.attach_document(parent, &source, index)
     }
     pub fn insert_text(&self, parent: usize, index: usize, value: &str) -> Result<usize> {
             self.edit(|doc| {

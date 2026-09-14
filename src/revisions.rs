@@ -16,24 +16,25 @@ impl Metadata {
     pub fn new(doc: &Document, author: &str, date: Option<&str>) -> Result<Self> {
         if author.is_empty() { return Err(Error::Invalid("A nonempty author is required".into())); }
         let date = timestamp(date)?;
-        let mut probe = Document::from_element(word_element("ins"));
-        probe.set_attribute(probe.root, W, "author", author, None)?;
+        crate::xml::check_value(author)?;
         let used = doc.nodes.iter().flatten().filter_map(|n| n.element()?.attribute(W, "id")?.trim().parse().ok()).collect();
         Ok(Self { author: author.into(), date, used, next: 0 })
     }
-    pub fn element(&mut self, kind: &str, content: Option<&Document>) -> Result<Document> {
+    /// The next revision or bookmark id unused in the tree.
+    pub fn fresh(&mut self) -> u64 {
         while self.used.contains(&self.next) { self.next += 1; }
+        self.next += 1;
+        self.next - 1
+    }
+    pub fn element(&mut self, kind: &str, content: Option<&Document>) -> Result<Document> {
         let mut doc = Document::from_element(word_element(kind));
-        for (key, value) in [("author", self.author.as_str()), ("date", self.date.as_str()), ("id", &self.next.to_string())] {
+        let ident = self.fresh().to_string();
+        for (key, value) in [("author", self.author.as_str()), ("date", self.date.as_str()), ("id", &ident)] {
             doc.set_attribute(doc.root, W, key, value, None)?;
         }
-        self.next += 1;
         if let Some(content) = content { doc.import(content, content.root, Some(doc.root))?; }
         Ok(doc)
     }
-}
-fn elements(doc: &Document, id: usize) -> Result<Vec<usize>> {
-    Ok(doc.node(id)?.children.iter().copied().filter(|&id| doc.nodes[id].as_ref().unwrap().element().is_some()).collect())
 }
 pub fn runs(doc: &Document, id: usize) -> Result<Vec<usize>> {
     if !matches!(name(doc, id), Some("ins" | "del")) || doc.node(id)?.parent.is_none_or(|p| name(doc, p) != Some("p")) {
@@ -47,16 +48,19 @@ pub fn runs(doc: &Document, id: usize) -> Result<Vec<usize>> {
             if matches!(&node.kind, NodeKind::Text(s) if !s.trim().is_empty()) { return Err(unsupported("Revision contains non-run text")); }
             continue;
         }
-        if name(doc, run) != Some("r") { return Err(unsupported("Revision contains nested revisions or unsupported non-run content")); }
+        if name(doc, run) != Some("r") {
+            if name(doc, run).is_some_and(crate::text::marker) { continue; }
+            return Err(unsupported("Revision contains nested revisions or unsupported non-run content"));
+        }
         for &item in &node.children {
             if token(doc, item)? == OPAQUE { return Err(unsupported("Revision contains an unsupported run payload")); }
             if doc.node(item)?.element().is_none() { continue; }
             let local = name(doc, item);
-            if matches!(local, Some("t" | "delText")) && local != Some(if name(doc, id) == Some("del") { "delText" } else { "t" }) {
+            if matches!(local, Some("t" | "delText" | "instrText" | "delInstrText")) && matches!(local, Some("t" | "instrText")) == (name(doc, id) == Some("del")) {
                 return Err(unsupported("Revision contains text with the wrong insertion/deletion form"));
             }
             if local == Some("rPr") {
-                if descendants(doc, item).iter().any(|&id| revision_name(doc, id).is_some()) { return Err(unsupported("Run-property revisions are unsupported")); }
+                if doc.descendants(item)?.any(|id| revision_name(doc, id).is_some()) { return Err(unsupported("Run-property revisions are unsupported")); }
             } else if doc.node(item)?.children.iter().any(|&id| !matches!(doc.nodes[id].as_ref().unwrap().kind, NodeKind::Text(_))) {
                 return Err(unsupported("Revision text contains nested XML"));
             }
@@ -65,18 +69,24 @@ pub fn runs(doc: &Document, id: usize) -> Result<Vec<usize>> {
     }
     Ok(result)
 }
-pub fn rename_text(doc: &mut Document, runs: &[usize], old: &str, new: &str) -> Result<()> {
-    for &run in runs { for id in doc.node(run)?.children.clone() { if name(doc, id) == Some(old) { doc.rename(id, W, new, None)?; } } }
+pub fn rename_text(doc: &mut Document, runs: &[usize], deleted: bool) -> Result<()> {
+    for &run in runs {
+        for id in doc.node(run)?.children.clone() {
+            for (text, deleted_text) in [("t", "delText"), ("instrText", "delInstrText")] {
+                let (old, new) = if deleted { (text, deleted_text) } else { (deleted_text, text) };
+                if name(doc, id) == Some(old) { doc.rename(id, W, new, None)?; }
+            }
+        }
+    }
     Ok(())
 }
 fn check_boundary(doc: &Document, id: usize, following: Option<usize>) -> Result<(usize, usize)> {
     let paragraph = boundary_paragraph(doc, id).ok_or_else(|| unsupported("Not a paragraph-boundary revision"))?;
-    check_paragraph(doc, paragraph, true)?;
+    check_paragraph(doc, paragraph, true, false)?;
     let following = if let Some(following) = following { Some(following) } else {
-        let siblings = elements(doc, doc.node(paragraph)?.parent.unwrap())?;
-        siblings.iter().position(|&p| p == paragraph).and_then(|i| siblings.get(i + 1).copied())
+        doc.element_children(doc.node(paragraph)?.parent.unwrap())?.skip_while(|&p| p != paragraph).nth(1)
     }.filter(|&p| name(doc, p) == Some("p")).ok_or_else(|| unsupported("Final paragraph marks and paragraph/table boundaries are unsupported"))?;
-    check_paragraph(doc, following, true)?;
+    check_paragraph(doc, following, true, true)?;
     if marks(doc, paragraph).len() != 1 || doc.node(id)?.children.iter().any(|&id| {
         let node = doc.nodes[id].as_ref().unwrap(); node.element().is_some() || matches!(&node.kind, NodeKind::Text(s) if !s.trim().is_empty())
     }) { return Err(unsupported("Conflicting or nonempty paragraph-boundary markup is unsupported")); }
@@ -107,18 +117,19 @@ pub fn property_change(doc: &Document, id: usize) -> Result<(usize, usize)> {
         return Err(unsupported("Expected a run or paragraph property change"));
     }
     property_owner(doc, current)?;
-    if elements(doc, doc.node(current)?.parent.unwrap())?.iter().filter(|&&c| name(doc, c) == name(doc, current)).count() != 1 {
-        return Err(unsupported("Multiple current property blocks are ambiguous"));
-    }
-    let previous = elements(doc, id)?;
-    if previous.len() != 1 || name(doc, previous[0]) != name(doc, current) { return Err(unsupported("Property change requires exactly one previous-properties snapshot")); }
-    if descendants(doc, current).iter().any(|&e| e != id && revision_name(doc, e).is_some()) {
+    unique_child(doc, doc.node(current)?.parent.unwrap(), name(doc, current).unwrap())?;
+    let mut children = doc.element_children(id)?;
+    let previous = match (children.next(), children.next()) {
+        (Some(previous), None) if name(doc, previous) == name(doc, current) => previous,
+        _ => return Err(unsupported("Property change requires exactly one previous-properties snapshot")),
+    };
+    if doc.descendants(current)?.any(|e| e != id && revision_name(doc, e).is_some()) {
         return Err(unsupported("Nested or conflicting property revision history is unsupported"));
     }
-    if kind == "pPrChange" && elements(doc, previous[0])?.iter().any(|&id| matches!(name(doc, id), Some("rPr" | "sectPr"))) {
+    if kind == "pPrChange" && doc.element_children(previous)?.any(|id| matches!(name(doc, id), Some("rPr" | "sectPr"))) {
         return Err(unsupported("Paragraph history cannot replace paragraph-mark or section properties"));
     }
-    Ok((current, previous[0]))
+    Ok((current, previous))
 }
 fn check(doc: &Document, id: usize, following: Option<usize>) -> Result<()> {
     if matches!(name(doc, id), Some("rPrChange" | "pPrChange")) { property_change(doc, id)?; }
@@ -145,7 +156,10 @@ fn checked_apply(doc: &mut Document, id: usize, accept: bool, following: Option<
         return Ok(());
     }
     if (name(doc, id) == Some("ins")) == accept {
-        if name(doc, id) == Some("del") { rename_text(doc, &elements(doc, id)?, "delText", "t")?; }
+        if name(doc, id) == Some("del") {
+            let runs = doc.element_children(id)?.collect::<Vec<_>>();
+            rename_text(doc, &runs, false)?;
+        }
         let (parent, mut index) = doc.position(id)?;
         for child in doc.node(id)?.children.clone() { doc.move_node(child, parent.unwrap(), index)?; index += 1; }
     }
@@ -155,12 +169,13 @@ pub fn apply(doc: &mut Document, id: usize, accept: bool) -> Result<()> { check(
 fn collect_with_successors(doc: &Document, scope: usize) -> Result<(Vec<usize>, HashMap<usize, usize>)> {
     fn visit(doc: &Document, id: usize, revisions: &mut Vec<usize>, successors: &mut HashMap<usize, usize>) -> Result<()> {
         if revision_name(doc, id).is_some() {
-            check(doc, id, boundary_paragraph(doc, id).and_then(|p| successors.get(&p).copied()))?;
             revisions.push(id); return Ok(());
         }
-        let children = elements(doc, id)?;
-        for pair in children.windows(2) { if name(doc, pair[0]) == Some("p") { successors.insert(pair[0], pair[1]); } }
-        for child in children { visit(doc, child, revisions, successors)?; }
+        let mut children = doc.element_children(id)?.peekable();
+        while let Some(child) = children.next() {
+            if name(doc, child) == Some("p") { if let Some(&next) = children.peek() { successors.insert(child, next); } }
+            visit(doc, child, revisions, successors)?;
+        }
         Ok(())
     }
     let (mut revisions, mut successors) = (Vec::new(), HashMap::new());
@@ -170,10 +185,9 @@ fn collect_with_successors(doc: &Document, scope: usize) -> Result<(Vec<usize>, 
 pub fn collect(doc: &Document, scope: usize) -> Result<Vec<usize>> { collect_with_successors(doc, scope).map(|v| v.0) }
 pub fn apply_all(doc: &mut Document, scope: usize, accept: bool) -> Result<usize> {
     let (ids, successors) = collect_with_successors(doc, scope)?;
-    for &id in &ids {
-        let following = boundary_paragraph(doc, id).and_then(|p| successors.get(&p).copied());
-        checked_apply(doc, id, accept, following)?;
-    }
+    let following = |doc: &Document, id| boundary_paragraph(doc, id).and_then(|p| successors.get(&p).copied());
+    for &id in &ids { check(doc, id, following(doc, id))?; }
+    for &id in &ids { checked_apply(doc, id, accept, following(doc, id))?; }
     Ok(ids.len())
 }
 pub fn revision_text(doc: &Document, id: usize) -> Result<String> {
@@ -184,26 +198,25 @@ pub fn revision_text(doc: &Document, id: usize) -> Result<String> {
     for run in runs(doc, id)? { for &item in &doc.node(run)?.children { result.push_str(&token(doc, item)?); } }
     Ok(result)
 }
-pub fn format(doc: &mut Document, scope: usize, target: usize, properties: &Document, attrs: &mut Metadata) -> Result<usize> {
+pub fn format(doc: &mut Document, scope: usize, target: usize, properties: &Document, previous: Option<Document>, attrs: &mut Metadata) -> Result<usize> {
     let expected = match name(doc, target) { Some("r") => "rPr", Some("p") => "pPr", _ => return Err(Error::Invalid("Formatting target requires a run or paragraph".into())) };
     inside(doc, scope, target)?;
     let paragraph = if expected == "pPr" { Some(target) } else { doc.node(target)?.parent };
     let paragraph = paragraph.filter(|&id| name(doc, id) == Some("p")).ok_or_else(|| unsupported("Formatting requires an ordinary paragraph"))?;
     context(doc, paragraph)?;
     if name(properties, properties.root) != Some(expected) { return Err(Error::Invalid(format!("Expected w:{expected} properties"))); }
-    if expected == "pPr" && elements(properties, properties.root)?.iter().any(|&id| matches!(name(properties, id), Some("rPr" | "sectPr"))) {
+    if expected == "pPr" && properties.element_children(properties.root)?.any(|id| matches!(name(properties, id), Some("rPr" | "sectPr"))) {
         return Err(Error::Invalid("Supply paragraph base properties only; paragraph-mark and section properties are retained".into()));
     }
-    let existing = elements(doc, target)?.into_iter().filter(|&id| name(doc, id) == Some(expected)).collect::<Vec<_>>();
-    if existing.len() > 1 { return Err(unsupported("Multiple current property blocks are ambiguous")); }
-    if descendants(properties, properties.root).iter().any(|&id| revision_name(properties, id).is_some()) ||
-        existing.iter().flat_map(|&id| descendants(doc, id)).any(|id| revision_name(doc, id).is_some()) {
+    let old = unique_child(doc, target, expected)?;
+    if properties.descendants(properties.root)?.any(|id| revision_name(properties, id).is_some()) ||
+        old.is_some_and(|id| doc.descendants(id).unwrap().any(|id| revision_name(doc, id).is_some())) {
         return Err(unsupported("Nested or conflicting property revision history is unsupported"));
     }
-    let old = existing.first().copied();
-    let mut previous = match old {
-        Some(id) => shell(doc, Some(id), &doc.node(id)?.children)?,
-        None => Document::from_element(word_element(expected)),
+    let mut previous = match (previous, old) {
+        (Some(previous), _) => previous,
+        (None, Some(id)) => shell(doc, Some(id), &doc.node(id)?.children)?,
+        (None, None) => Document::from_element(word_element(expected)),
     };
     // Property elements need their ordinary run/paragraph context for schema ordering.
     let mut replacement = shell(doc, Some(target), &[])?;
@@ -218,7 +231,7 @@ pub fn format(doc: &mut Document, scope: usize, target: usize, properties: &Docu
     }
     let kind = format!("{expected}Change");
     let history = attrs.element(&kind, Some(&previous))?;
-    let index = crate::schema::insertion_position(&replacement, replacement_root, W, &kind)?;
+    let index = crate::schema::insertion_position(&mut replacement, replacement_root, W, &kind)?;
     attach(&mut replacement, replacement_root, index, &history)?;
     let index = old.map(|id| doc.position(id).map(|(_, i)| i)).transpose()?.unwrap_or(0);
     let current = doc.import_at(&replacement, replacement_root, target, index)?;
@@ -226,22 +239,18 @@ pub fn format(doc: &mut Document, scope: usize, target: usize, properties: &Docu
     Ok(child(doc, current, &kind).unwrap())
 }
 pub fn tracked_replace(doc: &mut Document, scope: usize, range_root: usize, start: usize, end: usize, text: &str, attrs: &mut Metadata) -> Result<Vec<usize>> {
-    let rows = paragraphs(doc, range_root, View::Current)?;
-    let length = rows.last().map(|r| r.position + r.projection.len).unwrap_or(0);
-    if start > end || end > length { return Err(Error::Invalid("Range positions are outside the story".into())); }
-    let single = rows.iter().find(|r| r.paragraph.is_some() && r.position <= start && end <= r.position + r.projection.len);
-    let multiline = text.contains('\n') || single.is_none();
-    let parts = if multiline { span_parts(doc, &rows, start, end)? } else {
-        let row = single.unwrap(); vec![preflight(doc, row.paragraph.unwrap(), &row.projection, start - row.position, end - row.position)?]
-    };
+    let (parts, chunks, multiline) = prepare_replacement(doc, range_root, start, end, text)?;
+    apply_replacement(doc, scope, parts, chunks, multiline, attrs)
+}
+/// Record prepared selections as deletions and each chunk's nodes as an insertion, splitting and joining paragraphs between chunks.
+pub fn apply_replacement(doc: &mut Document, scope: usize, parts: Vec<Selection>, chunks: Vec<Vec<Document>>, multiline: bool, attrs: &mut Metadata) -> Result<Vec<usize>> {
     inside(doc, scope, parts[0].paragraph)?;
     if multiline && name(doc, scope) == Some("p") { return Err(unsupported("Tracked paragraph creation requires a containing Story, not paragraph-only scope")); }
-    let chunks = replacement_runs(doc, parts[0].template, text)?;
     let deletions = parts.iter().map(|p| if p.start < p.end { attrs.element("del", None).map(Some) } else { Ok(None) }).collect::<Result<Vec<_>>>()?;
     let old_breaks = (1..parts.len()).map(|_| attrs.element("del", None)).collect::<Result<Vec<_>>>()?;
-    let insertions = chunks.iter().map(|chunk| chunk.as_ref().map(|chunk| attrs.element("ins", Some(chunk))).transpose()).collect::<Result<Vec<_>>>()?;
+    let insertions = chunks.iter().map(|chunk| if chunk.is_empty() { Ok(None) } else { attrs.element("ins", None).map(Some) }).collect::<Result<Vec<_>>>()?;
     let new_breaks = (1..chunks.len()).map(|_| attrs.element("ins", None)).collect::<Result<Vec<_>>>()?;
-    if start == end && text.is_empty() { return Ok(Vec::new()); }
+    if !multiline && parts[0].start == parts[0].end && chunks[0].is_empty() { return Ok(Vec::new()); }
     let isolated = parts.into_iter().map(|p| isolate(doc, p, true)).collect::<Result<Vec<_>>>()?;
     let mut created = Vec::new();
     let prefix = if multiline { isolated[0].index - content_start(doc, isolated[0].paragraph)? } else { 0 };
@@ -249,7 +258,7 @@ pub fn tracked_replace(doc: &mut Document, scope: usize, range_root: usize, star
         if let Some(deletion) = deletion {
             let element = attach(doc, part.paragraph, part.index, deletion)?;
             for &run in &part.runs { doc.move_node(run, element, doc.node(element)?.children.len())?; }
-            rename_text(doc, &part.runs, "t", "delText")?;
+            rename_text(doc, &part.runs, true)?;
             created.push(element);
         }
     }
@@ -257,7 +266,12 @@ pub fn tracked_replace(doc: &mut Document, scope: usize, range_root: usize, star
     let mut paragraph = isolated[0].paragraph;
     let mut index = if multiline { content_start(doc, paragraph)? + prefix } else { isolated[0].index } + usize::from(deletions[0].is_some());
     for (i, insertion) in insertions.iter().enumerate() {
-        if let Some(insertion) = insertion { created.push(attach(doc, paragraph, index, insertion)?); index += 1; }
+        if let Some(insertion) = insertion {
+            let element = attach(doc, paragraph, index, insertion)?;
+            for (at, node) in chunks[i].iter().enumerate() { attach(doc, element, at, node)?; }
+            created.push(element);
+            index += 1;
+        }
         if i < new_breaks.len() {
             let left;
             (left, paragraph) = split_at(doc, paragraph, index, None)?;
@@ -297,6 +311,6 @@ pub fn revisions_format(py: Python<'_>, story: &Story, target: usize, properties
     let properties = crate::xml::parse_bytes(properties)?;
     py.detach(|| story.xml.edit(|doc| {
         let mut attrs = Metadata::new(doc, author, date)?;
-        format(doc, story.element, target, &properties, &mut attrs)
+        format(doc, story.element, target, &properties, None, &mut attrs)
     }))
 }

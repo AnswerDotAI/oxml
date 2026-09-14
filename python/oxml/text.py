@@ -1,4 +1,4 @@
-"""Thin Python views of native Word stories and Unicode text ranges."""
+'Thin Python views of native Word stories and Unicode text ranges.'
 from . import _core
 from .model import Element, Tree
 
@@ -21,7 +21,9 @@ class Story:
     @property
     def text(self): return self._native.text
 
-    def range(self, start, end): return Range._from_native(self._native.range(start, end), self.part_uri)
+    def range(self, start, end):
+        "Range over code-point offsets `start` to `end` of the story text"
+        return Range._from_native(self._native.range(start, end), self.part_uri)
     def find(self, literal, start=0):
         native = self._native.find(literal, start)
         return None if native is None else Range._from_native(native, self.part_uri)
@@ -32,8 +34,7 @@ class Story:
 
 class Range:
     "Unicode code-point offsets; any XML edit makes the range stale."
-    def __init__(self, story, start, end):
-        self._native, self.story = _core.NativeRange(story._native, start, end), story
+    def __init__(self, story, start, end): self._native, self.story = _core.NativeRange(story._native, start, end), story
 
     @classmethod
     def _from_native(cls, native, part_uri=None):
@@ -47,5 +48,9 @@ class Range:
     def end(self): return self._native.end
     @property
     def text(self): return self._native.text
+    @property
+    def paragraph(self):
+        "The paragraph containing this range; a range spanning paragraphs has none"
+        return self.story.element._tree._element(self._native.paragraph_id)
 
     def replace(self, text): return Range._from_native(self._native.replace(text), self.story.part_uri)

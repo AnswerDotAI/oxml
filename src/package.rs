@@ -202,6 +202,7 @@ pub struct PackageData {
     signed: bool,
     loaded: BTreeMap<String, (xml::Xml, u64)>,
     generations: BTreeMap<String, u64>,
+    pub(crate) next_drawing_id: u32,
 }
 
 impl PackageData {
@@ -250,7 +251,7 @@ impl PackageData {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
             if entry.is_dir() { names.remove(&format!("/{}", entry.name().trim_end_matches('/')).to_ascii_lowercase()); }
         }
-        let mut package = Self { original, archive, names, changes: BTreeMap::new(), main: String::new(), signed: false, loaded: BTreeMap::new(), generations: BTreeMap::new() };
+        let mut package = Self { original, archive, names, changes: BTreeMap::new(), main: String::new(), signed: false, loaded: BTreeMap::new(), generations: BTreeMap::new(), next_drawing_id: 0 };
         let types = package.types()?;
         package.signed = types.records().map(|(_, r)| r).any(|r| r.attribute("", "ContentType").is_some_and(|s| s.contains("digital-signature")));
         for uri in package.names.values() {
@@ -287,6 +288,26 @@ impl PackageData {
         (&mut entry).take(expected + 1).read_to_end(&mut data).map_err(zip_error)?;
         if data.len() as u64 != expected || data.len() as u64 > MAX_PART { return Err(invalid("ZIP payload size does not match the bounded index")); }
         Ok(data)
+    }
+
+    pub(crate) fn archive_errors(&self) -> Vec<(String, String)> {
+        let mut archive = self.archive.clone();
+        let mut errors = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = match archive.by_index(index) {
+                Ok(entry) => entry,
+                Err(e) => { errors.push((format!("ZIP entry {index}"), e.to_string())); continue; }
+            };
+            let uri = format!("/{}", entry.name());
+            if self.changes.contains_key(&uri) || self.loaded.contains_key(&uri) { continue; }
+            let expected = entry.size();
+            match std::io::copy(&mut (&mut entry).take(expected + 1), &mut std::io::sink()) {
+                Ok(size) if size == expected => (),
+                Ok(_) => errors.push((uri, "ZIP payload size does not match its index".into())),
+                Err(e) => errors.push((uri, e.to_string())),
+            }
+        }
+        errors
     }
 
     fn editable(&self) -> Result<()> {
@@ -569,6 +590,13 @@ impl PackageData {
         self.existing(&resolve_target(&source, target)?)
     }
 
+    pub fn relationship_id(&self, source_uri: &str, target_uri: &str) -> Result<String> {
+        let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
+        let target = self.existing(target_uri)?;
+        let rel = self.rels(&source)?.1.into_iter().find(|r| r.mode == "Internal" && resolve_target(&source, &r.target).is_ok_and(|p| p.eq_ignore_ascii_case(&target)));
+        rel.map(|r| r.id).ok_or_else(|| Error::Missing("No relationship to that part in this scope".into()))
+    }
+
     pub fn add_relationship(
         &mut self,
         source_uri: &str,
@@ -742,6 +770,7 @@ impl Package {
         self.lock()?.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id)
     }
     pub fn remove_relationship(&self, source_uri: &str, relationship_id: &str) -> Result<()> { self.lock()?.remove_relationship(source_uri, relationship_id) }
+    pub fn relationship_id(&self, source_uri: &str, target_uri: &str) -> Result<String> { self.lock()?.relationship_id(source_uri, target_uri) }
     #[pyo3(signature = (item_id, data, schema_uri=None))]
     pub fn set_custom_xml(&self, item_id: &str, data: &[u8], schema_uri: Option<&str>) -> Result<Part> {
         let uri = self.lock()?.set_custom_xml(item_id, data, schema_uri)?;
@@ -776,5 +805,9 @@ impl Part {
     pub fn replace(&self, data: &[u8]) -> Result<Part> {
         self.check()?.replace_part(&self.uri, data)?;
         self.package.part(&self.uri)
+    }
+    #[pyo3(signature = (data, content_type=None, width=None, height=None, description=""))]
+    pub fn add_image(&self, data: &[u8], content_type: Option<&str>, width: Option<i64>, height: Option<i64>, description: &str) -> Result<xml::Xml> {
+        crate::images::add(&mut *self.check()?, &self.uri, data, content_type, width, height, description)
     }
 }

@@ -4,9 +4,6 @@ use pyo3::prelude::*;
 
 fn invalid(message: &str) -> Error { Error::Invalid(message.into()) }
 fn unsupported(message: &str) -> Error { Error::Unsupported(message.into()) }
-fn element_children(doc: &Document, id: usize) -> Result<Vec<usize>> {
-    Ok(doc.node(id)?.children.iter().copied().filter(|&id| doc.node(id).is_ok_and(|n| n.element().is_some())).collect())
-}
 fn indexed(items: &[usize], index: isize) -> Result<usize> {
     let position = if index < 0 { items.len() as isize + index } else { index };
     items.get(position as usize).copied().ok_or_else(|| Error::Index(index.to_string()))
@@ -16,12 +13,12 @@ fn cell(doc: &Document, template: Option<usize>, value: &str) -> Result<Document
     let paragraph = template.and_then(|id| text::child(doc, id, "p"));
     let run = paragraph.and_then(|id| text::child(doc, id, "r"));
     if let Some(template) = template {
-        for id in children(doc, template, "tcPr") { result.import(doc, id, Some(result.root))?; }
+        for id in children(doc, template, "tcPr")? { result.import(doc, id, Some(result.root))?; }
     }
     for line in value.split('\n') {
         let root = result.root;
         let p = definitions::append(&mut result, root, "p")?;
-        if let Some(paragraph) = paragraph { for id in children(doc, paragraph, "pPr") { result.import(doc, id, Some(p))?; } }
+        if let Some(paragraph) = paragraph { for id in children(doc, paragraph, "pPr")? { result.import(doc, id, Some(p))?; } }
         let source = text::run_text(doc, run, line)?;
         let position = result.node(p)?.children.len();
         text::attach(&mut result, p, position, &source)?;
@@ -30,36 +27,38 @@ fn cell(doc: &Document, template: Option<usize>, value: &str) -> Result<Document
 }
 fn grid(doc: &Document, table: usize) -> Result<(usize, Vec<usize>)> {
     doc.node(table)?;
-    let grids = children(doc, table, "tblGrid");
-    let rows = children(doc, table, "tr");
+    let grids: Vec<_> = children(doc, table, "tblGrid")?.collect();
+    let rows: Vec<_> = children(doc, table, "tr")?.collect();
     if grids.len() != 1 || rows.is_empty() { return Err(unsupported("Table needs one grid and at least one row")); }
-    let columns = element_children(doc, grids[0])?;
+    let columns: Vec<_> = doc.element_children(grids[0])?.collect();
     if columns.is_empty() || columns.iter().any(|&id| name(doc, id) != Some("gridCol")) { return Err(unsupported("Unsupported table grid")); }
-    if element_children(doc, table)?.iter().any(|&id| !matches!(name(doc, id), Some("tblPr" | "tblGrid" | "tr"))) {
+    if doc.element_children(table)?.any(|id| !matches!(name(doc, id), Some("tblPr" | "tblGrid" | "tr"))) {
         return Err(unsupported("Table contains unsupported structural children"));
     }
     for &row in &rows {
-        let cells = children(doc, row, "tc");
-        if cells.len() != columns.len() || element_children(doc, row)?.iter().any(|&id| !matches!(name(doc, id), Some("trPr" | "tc"))) {
+        let cells: Vec<_> = children(doc, row, "tc")?.collect();
+        if cells.len() != columns.len() || doc.element_children(row)?.any(|id| !matches!(name(doc, id), Some("trPr" | "tc"))) {
             return Err(unsupported("Only rectangular tables are supported"));
         }
-        let mut properties = children(doc, row, "trPr");
-        for cell in cells { properties.extend(children(doc, cell, "tcPr")); }
+        let mut properties: Vec<_> = children(doc, row, "trPr")?.collect();
+        for cell in cells { properties.extend(children(doc, cell, "tcPr")?); }
         for property in properties {
-            if element_children(doc, property)?.iter().any(|&id| matches!(name(doc, id), Some("gridSpan" | "vMerge" | "hMerge" | "gridBefore" | "gridAfter"))) {
+            if doc.element_children(property)?.any(|id| matches!(name(doc, id), Some("gridSpan" | "vMerge" | "hMerge" | "gridBefore" | "gridAfter"))) {
                 return Err(unsupported("Merged or offset cells require explicit grid editing"));
             }
         }
     }
-    if text::descendants(doc, table).iter().any(|&id| text::revision_name(doc, id).is_some()) {
+    if doc.descendants(table)?.any(|id| text::revision_name(doc, id).is_some()) {
         return Err(unsupported("Revised tables require explicit acceptance/rejection first"));
     }
     Ok((grids[0], rows))
 }
 fn check_removal(doc: &Document, ids: &[usize]) -> Result<()> {
-    if ids.iter().any(|&id| text::descendants(doc, id).iter().any(|&id|
-        matches!(name(doc, id), Some("bookmarkStart" | "bookmarkEnd" | "commentRangeStart" | "commentRangeEnd" | "commentReference")))) {
-        return Err(unsupported("Remove or relocate bookmarks/comments before deleting their table cells"));
+    for &id in ids {
+        if doc.descendants(id)?.any(|id|
+            matches!(name(doc, id), Some("bookmarkStart" | "bookmarkEnd" | "commentRangeStart" | "commentRangeEnd" | "commentReference"))) {
+            return Err(unsupported("Remove or relocate bookmarks/comments before deleting their table cells"));
+        }
     }
     Ok(())
 }
@@ -99,8 +98,8 @@ impl Table {
             }
             let position = match index {
                 Some(i) => i,
-                None if name(doc, parent) == Some("tc") && element_children(doc, parent)?.last().is_some_and(|&id| name(doc, id) == Some("p")) => {
-                    doc.position(*element_children(doc, parent)?.last().unwrap())?.1
+                None if name(doc, parent) == Some("tc") && doc.element_children(parent)?.next_back().is_some_and(|id| name(doc, id) == Some("p")) => {
+                    doc.position(doc.element_children(parent)?.next_back().unwrap())?.1
                 }
                 None => schema::insertion_position(doc, parent, W, "tbl")?,
             };
@@ -109,11 +108,16 @@ impl Table {
         Ok(Self { xml: xml.clone(), node_id })
     }
     #[getter]
-    pub fn rows(&self) -> Result<Vec<usize>> { let doc = self.xml.read()?; doc.node(self.node_id)?; Ok(children(&doc, self.node_id, "tr")) }
+    pub fn rows(&self) -> Result<Vec<usize>> {
+        let doc = self.xml.read()?;
+        let rows = children(&doc, self.node_id, "tr")?;
+        Ok(rows.collect())
+    }
     pub fn cells(&self, row: isize) -> Result<Vec<usize>> {
         let doc = self.xml.read()?;
-        doc.node(self.node_id)?;
-        Ok(children(&doc, indexed(&children(&doc, self.node_id, "tr"), row)?, "tc"))
+        let row = indexed(&children(&doc, self.node_id, "tr")?.collect::<Vec<_>>(), row)?;
+        let cells = children(&doc, row, "tc")?;
+        Ok(cells.collect())
     }
     #[pyo3(signature=(index, values=None))]
     pub fn insert_row(&self, index: usize, values: Option<Vec<String>>) -> Result<usize> {
@@ -121,10 +125,10 @@ impl Table {
             let (_, rows) = grid(doc, self.node_id)?;
             if index > rows.len() { return Err(Error::Index(index.to_string())); }
             let template = rows[index.min(rows.len() - 1)];
-            let cells = children(doc, template, "tc");
+            let cells: Vec<_> = children(doc, template, "tc")?.collect();
             let values = values.unwrap_or_else(|| vec![String::new(); cells.len()]);
             if values.len() != cells.len() { return Err(invalid("Row values must match the column grid")); }
-            let mut source = text::shell(doc, Some(template), &children(doc, template, "trPr"))?;
+            let mut source = text::shell(doc, Some(template), &children(doc, template, "trPr")?.collect::<Vec<_>>())?;
             for (template, value) in cells.into_iter().zip(values) {
                 let new_cell = cell(doc, Some(template), &value)?;
                 let (root, index) = (source.root, source.node(source.root)?.children.len());
@@ -147,11 +151,11 @@ impl Table {
     pub fn insert_column(&self, index: usize) -> Result<Vec<usize>> {
         self.xml.edit(|doc| {
             let (grid, rows) = grid(doc, self.node_id)?;
-            let columns = element_children(doc, grid)?;
+            let columns: Vec<_> = doc.element_children(grid)?.collect();
             if index > columns.len() { return Err(Error::Index(index.to_string())); }
             let adjacent = index.min(columns.len() - 1);
             let after = usize::from(index == columns.len());
-            let cells: Vec<_> = rows.iter().map(|&row| children(doc, row, "tc")[adjacent]).collect();
+            let cells = rows.iter().map(|&row| Ok(children(doc, row, "tc")?.nth(adjacent).unwrap())).collect::<Result<Vec<_>>>()?;
             let sources = cells.iter().map(|&id| cell(doc, Some(id), "")).collect::<Result<Vec<_>>>()?;
             let position = doc.position(columns[adjacent])?.1 + after;
             doc.copy(columns[adjacent], grid, position)?;
@@ -161,10 +165,10 @@ impl Table {
     pub fn delete_column(&self, index: isize) -> Result<()> {
         self.xml.edit(|doc| {
             let (grid, rows) = grid(doc, self.node_id)?;
-            let columns = element_children(doc, grid)?;
+            let columns: Vec<_> = doc.element_children(grid)?.collect();
             if columns.len() == 1 { return Err(invalid("Delete the table element to remove its last column")); }
             let column = indexed(&columns, index)?;
-            let cells = rows.iter().map(|&row| indexed(&children(doc, row, "tc"), index)).collect::<Result<Vec<_>>>()?;
+            let cells = rows.iter().map(|&row| indexed(&children(doc, row, "tc")?.collect::<Vec<_>>(), index)).collect::<Result<Vec<_>>>()?;
             check_removal(doc, &cells)?;
             for cell in cells { doc.remove(cell)?; }
             doc.remove(column)

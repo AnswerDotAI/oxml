@@ -3,6 +3,7 @@ pub mod error;
 pub mod package;
 pub mod package_schema;
 pub mod schema;
+mod xsd;
 pub mod xml;
 pub mod text;
 pub mod definitions;
@@ -10,8 +11,11 @@ pub mod tables;
 pub mod revisions;
 pub mod compare;
 pub mod comments;
+pub mod footnotes;
 pub mod links;
 pub mod importing;
+pub mod images;
+pub mod properties;
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -26,10 +30,18 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tables::Table>()?;
     m.add_class::<comments::Comments>()?;
     m.add_class::<comments::Comment>()?;
+    m.add_class::<footnotes::Footnotes>()?;
+    m.add_class::<footnotes::Footnote>()?;
     m.add_class::<links::Bookmarks>()?;
     m.add_class::<links::Bookmark>()?;
     m.add_class::<links::Hyperlinks>()?;
     m.add_class::<links::Hyperlink>()?;
+    m.add_class::<properties::Properties>()?;
+    m.add_class::<properties::Settings>()?;
+    m.add_function(wrap_pyfunction!(links::field, m)?)?;
+    m.add_function(wrap_pyfunction!(links::bookmark_name, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::child_of_type, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::on_off_attributes, m)?)?;
     m.add_function(wrap_pyfunction!(definitions::style_items, m)?)?;
     m.add_function(wrap_pyfunction!(definitions::style_get, m)?)?;
     m.add_function(wrap_pyfunction!(definitions::style_find, m)?)?;
@@ -46,10 +58,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(schema::element_type, m)?)?;
     m.add_function(wrap_pyfunction!(schema::check_element_type, m)?)?;
     m.add_function(wrap_pyfunction!(schema::elements_of_type, m)?)?;
-    m.add_function(wrap_pyfunction!(schema::child_position, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::count_elements, m)?)?;
+    m.add_function(wrap_pyfunction!(schema::reorder_children, m)?)?;
     m.add_function(wrap_pyfunction!(schema::typed_attribute, m)?)?;
     m.add_function(wrap_pyfunction!(schema::set_typed_attribute, m)?)?;
     m.add_function(wrap_pyfunction!(package_schema::declared_part, m)?)?;
+    m.add_function(wrap_pyfunction!(package_schema::add_declared_part, m)?)?;
     m.add_function(wrap_pyfunction!(package_schema::package_stories, m)?)?;
     m.add_function(wrap_pyfunction!(package_schema::validate_package, m)?)?;
     m.add_function(wrap_pyfunction!(revisions::revision_ids, m)?)?;

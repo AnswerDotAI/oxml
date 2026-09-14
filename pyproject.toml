@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Office Open XML client"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
-dependencies = ["fastcore>=2.2.25"]
+dependencies = ["fastcore>=2.2.26"]
 readme = "README.md"
 authors = [{name = "Jeremy Howard", email = "github@jhoward.fastmail.fm"}]
 classifiers = [
@@ -28,9 +28,10 @@ Issues = "https://github.com/AnswerDotAI/oxml/issues"
 features = ["extension-module"]
 python-source = "python"
 module-name = "oxml._core"
+include = [{ path = "schema/xsd/SOURCES.md", format = ["sdist", "wheel"] }]
 
 [tool.uv]
-cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.rs" }, { file = "schema/metadata.json" }, { file = "Cargo.toml" }, { file = ".git/fastws-cargo-key" }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.rs" }, { file = "build.rs" }, { file = "schema/**/*" }, { file = "Cargo.toml" }, { file = ".git/fastws-cargo-key" }]
 
 [tool.fastship]
 branch = "main"

@@ -22,7 +22,7 @@ def test_multilevel_definition_continuation_and_new_instance_restart():
     restarted.apply(paragraphs[2])
     package = parts(doc)
     assert package['word/numbering.xml'] == b'occupied'
-    tree = doc._part('NumberingDefinitionsPart').xml
+    tree = doc.part('NumberingDefinitionsPart').xml
     assert not tree.validate()['issues']
     root = ET.fromstring(tree.bytes())
     levels = root.find(W+'abstractNum').findall(W+'lvl')
@@ -64,7 +64,7 @@ def test_multilevel_definition_continuation_and_new_instance_restart():
 # python-docx oxml/numbering.py models restart as num/lvlOverride/startOverride, not an abstract-definition mutation.
 def test_restart_preserves_real_overrides_definition_and_opaque_metadata(tmp_path):
     doc = Document.open(FIXTURE)
-    part = doc._part('NumberingDefinitionsPart')
+    part = doc.part('NumberingDefinitionsPart')
     rel, = [r for r in doc.package.relationships(doc.main.uri) if doc.package.relationship_part(doc.main.uri, r['id']) == part.uri]
     doc.package.add_part('/custom/lists.xml', part.content_type, part.read_bytes())
     doc.package.remove_part(part.uri)
@@ -73,7 +73,7 @@ def test_restart_preserves_real_overrides_definition_and_opaque_metadata(tmp_pat
     original = numbering[2]
     original.element._tree.xml.set_attribute(original.element.node_id, 'urn:keep', 'opaque', 'original', 'keep')
     original.element.set_attribute(W[1:-1], 'durableId', '11')
-    doc._part('NumberingDefinitionsPart').xml.root(e.numIdMacAtCleanup(val='6'))
+    doc.part('NumberingDefinitionsPart').xml.root(e.numIdMacAtCleanup(val='6'))
     before = parts(doc)
     restarted = original.restart(start=12)
     restarted.apply(list(doc.main.xml.elements(w.Paragraph))[1])

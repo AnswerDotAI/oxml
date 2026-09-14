@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
 const DATA: &str = include_str!("../schema/metadata.json");
-const MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+pub(crate) const MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const VERSIONS: [&str; 7] = ["Office2007", "Office2010", "Office2013", "Office2016", "Office2019", "Office2021", "Microsoft365"];
 static SCHEMA: OnceLock<Value> = OnceLock::new();
 pub(crate) fn schema() -> &'static Value { SCHEMA.get_or_init(|| serde_json::from_str(DATA).expect("generated schema JSON")) }
@@ -46,6 +46,9 @@ fn issue(rule: &str, category: &str, node: usize, expected: impl Into<Value>, ac
 pub fn namespace_bindings() -> HashMap<&'static str, &'static str> {
     schema()["namespaces"].as_object().unwrap().iter().map(|(k, v)| (k.as_str(), s(v))).collect()
 }
+pub(crate) fn prefix_of(uri: &str) -> &'static str {
+    schema()["namespaces"].as_object().unwrap().iter().find(|(_, v)| s(v) == uri).map_or("", |(p, _)| p.as_str())
+}
 
 type FacadeEnum = (&'static str, &'static str, &'static str, Vec<(&'static str, &'static str)>);
 type FacadeAttribute = (&'static str, &'static str);
@@ -76,6 +79,7 @@ type QName = (&'static str, &'static str);
 #[derive(Default)]
 struct SchemaIndex {
     roots: HashMap<QName, Option<&'static str>>,
+    root_candidates: HashMap<QName, Vec<&'static str>>,
     children: HashMap<&'static str, HashMap<QName, Option<&'static str>>>,
     semantics: HashMap<QName, Vec<(usize, &'static Value)>>,
     element_versions: HashMap<QName, u8>,
@@ -94,13 +98,17 @@ fn schema_index() -> &'static SchemaIndex {
             let version = rank(s(&t["version"])).unwrap_or(u8::MAX);
             index.element_versions.entry(name).and_modify(|v| *v = (*v).min(version)).or_insert(version);
             index.namespace_versions.entry(name.0).and_modify(|v| *v = (*v).min(version)).or_insert(version);
-            if !t["is_abstract"].as_bool().unwrap_or(false) { index.roots.entry(name).and_modify(|v| *v = None).or_insert(Some(id)); }
+            if !t["is_abstract"].as_bool().unwrap_or(false) { index.root_candidates.entry(name).or_default().push(id); }
             let children = index.children.entry(id).or_default();
             for child in arr(&t["children"]).iter().map(s) { children.entry(expanded(qname(child))).and_modify(|v| *v = None).or_insert(Some(child)); }
             if !t["particle"].is_null() {
                 index.particles.insert(id, Particle::compile(&t["particle"]));
                 index.child_order.insert(id, child_order(&t["particle"]));
             }
+        }
+        for (name, ids) in &index.root_candidates {
+            let modelled: Vec<&'static str> = ids.iter().copied().filter(|id| index.child_order.contains_key(id)).collect();
+            index.roots.insert(*name, if ids.len() == 1 { Some(ids[0]) } else if modelled.len() == 1 { Some(modelled[0]) } else { None });
         }
         for (i, rule) in arr(&schema()["semantics"]).iter().enumerate() { index.semantics.entry(expanded(s(&rule["Context"]))).or_default().push((i, rule)); }
         for definition in schema()["enums"].as_object().unwrap().values() { index.enums.insert(s(&definition["full_name"]), definition); }
@@ -140,15 +148,64 @@ pub fn check_type(doc: &Document, id: usize, expected: Option<&str>) -> Result<(
 pub fn check_element_type(xml: &Xml, id: usize, expected: Option<&str>) -> Result<()> { check_type(&*xml.read()?, id, expected) }
 
 #[pyfunction]
-#[pyo3(signature=(xml, type_id=None))]
-pub fn elements_of_type(xml: &Xml, type_id: Option<&str>) -> Result<Vec<usize>> {
+pub fn child_of_type(xml: &Xml, parent: usize, type_id: Option<&str>) -> Result<Option<usize>> {
     let doc = xml.read()?;
-    if type_id.is_none() { return Ok(doc.element_ids()); }
-    doc.element_ids().into_iter().filter_map(|id| match document_type(&doc, id) {
+    let mut found = None;
+    for id in doc.element_children(parent)? {
+        if type_id.is_some() && document_type(&doc, id)? != type_id { continue; }
+        if found.replace(id).is_some() { return Err(Error::Invalid(format!("Multiple {} children", type_id.unwrap_or("Element")))); }
+    }
+    Ok(found)
+}
+
+pub(crate) fn setting_attribute(name: &str) -> Result<&'static Value> {
+    let index = schema_index();
+    let w = expanded("w:settings").0;
+    let parent = index.roots.get(&(w, "settings")).copied().flatten().unwrap();
+    let id = index.children[parent].get(&(w, name)).copied().flatten()
+        .ok_or_else(|| Error::Missing(format!("Unknown setting {name}")))?;
+    let t = &schema()["types"][id];
+    let attrs = arr(&t["attributes"]);
+    if t["is_leaf"] == true && attrs.len() == 1 && s(&attrs[0]["QName"]) == "w:val" { return Ok(&attrs[0]); }
+    Err(Error::Unsupported(format!("{name} is not a flat value setting; use settings.root")))
+}
+
+/// Builder coercions come from enum values, not SDK type-name conventions.
+#[pyfunction]
+pub fn on_off_attributes() -> Vec<(&'static str, &'static str)> {
+    schema()["types"].as_object().unwrap().values().flat_map(|t| {
+        arr(&t["attributes"]).iter().filter_map(move |a| {
+            let kind = s(&a["Type"]).strip_prefix("EnumValue<")?.strip_suffix('>')?;
+            let e = schema_index().enums.get(kind)?;
+            let facets = arr(&e["Facets"]);
+            (facets.len() == 2 && facets.iter().any(|f| f["Value"] == "on") && facets.iter().any(|f| f["Value"] == "off"))
+                .then(|| (s(&t["qname"]), s(&a["QName"])))
+        })
+    }).collect()
+}
+
+#[pyfunction]
+#[pyo3(signature=(xml, type_id=None, root=None))]
+pub fn elements_of_type(xml: &Xml, type_id: Option<&str>, root: Option<usize>) -> Result<Vec<usize>> {
+    let doc = xml.read()?;
+    let ids: Vec<usize> = match root { Some(r) => doc.descendants(r)?.filter(|&id| id != r).collect(), None => doc.element_ids() };
+    if type_id.is_none() { return Ok(ids); }
+    ids.into_iter().filter_map(|id| match document_type(&doc, id) {
         Ok(actual) if actual == type_id => Some(Ok(id)),
         Err(error) => Some(Err(error)),
         _ => None,
     }).collect()
+}
+
+#[pyfunction]
+#[pyo3(signature=(xml, type_id=None))]
+pub fn count_elements(xml: &Xml, type_id: Option<&str>) -> Result<usize> {
+    let doc = xml.read()?;
+    let mut count = 0;
+    for id in doc.descendants(doc.root)? {
+        if type_id.is_none() || document_type(&doc, id)? == type_id { count += 1; }
+    }
+    Ok(count)
 }
 
 fn particle_slots(p: &'static Value) -> (Vec<HashSet<QName>>, HashSet<QName>, bool) {
@@ -185,30 +242,91 @@ fn child_order(p: &'static Value) -> HashMap<QName, usize> {
     order
 }
 
-pub fn insertion_position(doc: &Document, parent: usize, uri: &str, local: &str) -> Result<usize> {
-    let order = document_type(doc, parent)?.and_then(|id| schema_index().child_order.get(id));
-    let Some((order, &rank)) = order.and_then(|order| order.get(&(uri, local)).map(|rank| (order, rank))) else {
-        return Err(Error::Invalid(format!("No unambiguous schema position for {{{uri}}}{local}; supply index=")));
-    };
-    let children = &doc.node(parent)?.children;
-    let mut position = children.len();
-    let mut previous = None;
-    for (index, &id) in children.iter().enumerate() {
-        let Some(e) = doc.node(id)?.element() else { continue; };
-        let next = order.get(&(e.name.uri.as_str(), e.name.local.as_str())).copied();
-        if next.is_none() || previous.is_some_and(|p| next.unwrap() < p) {
-            return Err(Error::Invalid("Existing children have unclear schema order; supply index=".into()));
-        }
-        if next.unwrap() > rank && position == children.len() { position = index; }
-        previous = next;
+fn qualified(uri: &str, local: &str) -> String {
+    let prefix = prefix_of(uri);
+    if prefix.is_empty() { local.into() } else { format!("{prefix}:{local}") }
+}
+/// The parent's schema type with its child slots, or `None` without a type or a content model.
+fn content_order(doc: &Document, parent: usize) -> Result<Option<(&'static str, &'static HashMap<QName, usize>)>> {
+    Ok(document_type(doc, parent)?.and_then(|id| schema_index().child_order.get(id).map(|order| (id, order))))
+}
+/// `(id, rank)` per element child, or `None` when a child has no unambiguous slot in `order`.
+fn child_ranks(doc: &Document, parent: usize, order: &HashMap<QName, usize>) -> Result<Option<Vec<(usize, usize)>>> {
+    let mut ranks = Vec::new();
+    for id in children(doc, parent) {
+        let name = &doc.node(id)?.element().unwrap().name;
+        let Some(&rank) = order.get(&(name.uri.as_str(), name.local.as_str())) else { return Ok(None) };
+        ranks.push((id, rank));
     }
-    Ok(position)
+    Ok(Some(ranks))
+}
+/// Why `parent` cannot rank its children: the element without a type, the type without a model, or the child without a slot.
+fn unranked(doc: &Document, parent: usize) -> Result<String> {
+    let node = doc.node(parent)?;
+    let element = node.element().unwrap();
+    let name = element.name.lexical();
+    let Some(type_id) = document_type(doc, parent)? else {
+        if let Some(up) = node.parent {
+            return Ok(match document_type(doc, up)? {
+                Some(context) => format!("{name} has no unambiguous type inside {context}"),
+                None => format!("{name} has no schema type because {} has none", doc.node(up)?.element().unwrap().name.lexical()),
+            });
+        }
+        return Ok(match schema_index().root_candidates.get(&(element.name.uri.as_str(), element.name.local.as_str())) {
+            Some(candidates) if candidates.len() > 1 => {
+                format!("{name} has no schema type on its own: it could be {}; build it inside its parent or attach it to a live one", candidates.join(" or "))
+            }
+            _ => format!("{name} is not in the SDK schema"),
+        });
+    };
+    let Some(order) = schema_index().child_order.get(type_id) else { return Ok(format!("{type_id} has no child content model")) };
+    if order.is_empty() { return Ok(format!("{type_id} has no fixed child order")); }
+    for id in children(doc, parent) {
+        let child = &doc.node(id)?.element().unwrap().name;
+        if !order.contains_key(&(child.uri.as_str(), child.local.as_str())) { return Ok(format!("{} has no unambiguous slot in {type_id}", child.lexical())); }
+    }
+    Ok(format!("{name} is in schema order"))
+}
+/// Sort ranked element children into slot order, stable within a slot; other nodes keep their positions.
+fn sort_children(doc: &mut Document, parent: usize, mut ranks: Vec<(usize, usize)>) -> Result<Vec<(usize, usize)>> {
+    if ranks.windows(2).any(|pair| pair[0].1 > pair[1].1) {
+        ranks.sort_by_key(|&(_, rank)| rank);
+        let mut sorted = ranks.iter().map(|&(id, _)| id);
+        let sequence: Vec<usize> = doc.node(parent)?.children.iter()
+            .map(|&id| if doc.node(id).is_ok_and(|n| n.element().is_some()) { sorted.next().unwrap() } else { id }).collect();
+        *doc.sequence_mut(Some(parent))? = sequence;
+    }
+    Ok(ranks)
+}
+fn ranked(doc: &Document, parent: usize) -> Result<Option<Vec<(usize, usize)>>> {
+    Ok(match content_order(doc, parent)? { Some((_, order)) => child_ranks(doc, parent, order)?, None => None })
+}
+/// Sort `parent`'s children into schema order, plus every descendant's when `deep`; an unrankable `parent` is refused when `strict`, an unrankable descendant is left alone.
+pub fn reorder(doc: &mut Document, parent: usize, deep: bool, strict: bool) -> Result<()> {
+    let ids: Vec<usize> = if deep { doc.descendants(parent)?.collect() } else { vec![parent] };
+    for id in ids {
+        match ranked(doc, id)? {
+            Some(ranks) => { sort_children(doc, id, ranks)?; }
+            None if strict && id == parent => return Err(Error::Invalid(unranked(doc, parent)?)),
+            None => (),
+        }
+    }
+    Ok(())
+}
+pub fn insertion_position(doc: &mut Document, parent: usize, uri: &str, local: &str) -> Result<usize> {
+    let Some((type_id, order)) = content_order(doc, parent)? else { return Err(Error::Invalid(format!("{}; supply index=", unranked(doc, parent)?))) };
+    let Some(&rank) = order.get(&(uri, local)) else {
+        return Err(Error::Invalid(format!("{} has no unambiguous slot in {type_id}; supply index=", qualified(uri, local))));
+    };
+    let Some(ranks) = child_ranks(doc, parent, order)? else { return Err(Error::Invalid(format!("{}; supply index=", unranked(doc, parent)?))) };
+    let ranks = sort_children(doc, parent, ranks)?;
+    let children = &doc.node(parent)?.children;
+    Ok(ranks.iter().find(|&&(_, r)| r > rank).map_or(children.len(), |(id, _)| children.iter().position(|c| c == id).unwrap()))
 }
 
 #[pyfunction]
-pub fn child_position(xml: &Xml, parent: usize, uri: &str, local: &str) -> Result<usize> {
-    insertion_position(&*xml.read()?, parent, uri, local)
-}
+#[pyo3(signature=(xml, parent, deep=false, strict=true))]
+pub fn reorder_children(xml: &Xml, parent: usize, deep: bool, strict: bool) -> Result<()> { xml.edit(|doc| reorder(doc, parent, deep, strict)) }
 
 fn pattern(pattern: &str, value: &str, gaps: &mut BTreeSet<String>) -> bool {
     static PATTERNS: OnceLock<std::sync::Mutex<HashMap<String, Option<regex::Regex>>>> = OnceLock::new();
@@ -274,7 +392,7 @@ fn datetime(value: &str, gaps: &mut BTreeSet<String>) -> bool {
     parsed.is_ok_and(|t| (1..=9999).contains(&t.year()) && t.nanosecond() < 1_000_000_000)
 }
 
-fn boolean(kind: &str, value: &str) -> Option<bool> {
+pub(crate) fn boolean(kind: &str, value: &str) -> Option<bool> {
     let value = match kind { "BooleanValue" => value.trim_matches([' ', '\t', '\r', '\n']), "OnOffValue" => value, _ => return None };
     match value {
         "true" | "1" => Some(true),
@@ -351,10 +469,10 @@ fn validator(v: &Value, value: &str, kind: &str, gaps: &mut BTreeSet<String>) ->
         if !["RequiredValidator", "OfficeVersionValidator"].contains(&name) { gaps.insert(format!("validator:{name}")); }
         return true;
     }
-    // SDK NumberValidator.TryGetValue excludes DecimalValue; its lexical check still applies.
-    if name == "NumberValidator" && kind == "DecimalValue" { return true; }
+    // SDK TryGetValue applies bounds only to numeric primitives, not booleans, decimals or dates.
+    if name == "NumberValidator" && !matches!(kind, "ByteValue" | "SByteValue" | "Int16Value" | "UInt16Value" | "Int32Value" | "UInt32Value"
+        | "Int64Value" | "UInt64Value" | "IntegerValue" | "DoubleValue" | "SingleValue") { return true; }
     let number = value.trim_matches([' ', '\t', '\r', '\n']);
-    if name == "NumberValidator" && !matches!(kind, "DoubleValue" | "SingleValue") && number.parse::<i128>().is_err() { return false; }
     arr(&v["Arguments"]).iter().all(|a| {
         let key = s(&a["Name"]);
         let val = s(&a["Value"]);
@@ -441,7 +559,7 @@ fn typed_descriptor(type_id: &str, property: &str) -> Result<&'static Value> {
     attrs.iter().find(|a| s(&a["PropertyName"]) == property).ok_or_else(|| Error::Invalid("unknown typed attribute".into()))
 }
 
-fn checked_attribute(a: &Value, property: &str, value: &str, writing: bool) -> Result<()> {
+pub(crate) fn checked_attribute(a: &Value, property: &str, value: &str, writing: bool) -> Result<()> {
     let mut gaps = BTreeSet::new();
     let errors = check_attr(a, Some(value), "Microsoft365", &mut gaps);
     if !errors.is_empty() { return Err(Error::Invalid(format!("{property}: {value:?}: {}", errors.join(", ")))); }
@@ -466,7 +584,8 @@ pub fn set_typed_attribute(xml: &Xml, id: usize, type_id: &str, property: &str, 
     let (uri, local) = expanded(s(&a["QName"]));
     xml.edit(|doc| {
         check_type(doc, id, Some(type_id))?;
-        doc.set_attribute(id, uri, local, value, None)
+        if uri.is_empty() { return doc.set_attribute(id, uri, local, value, None); }
+        doc.set_attribute_ns(id, uri, local, value, prefix_of(uri)).map(|_| ())
     })
 }
 
@@ -597,13 +716,13 @@ impl Particle {
     }
 }
 
-fn ignorable(doc: &Document, id: usize, uri: &str) -> bool {
+pub(crate) fn ignorable(doc: &Document, id: usize, uri: &str) -> bool {
     if uri.is_empty() { return false; }
     ancestors(doc, id)
         .filter_map(Node::element)
         .any(|a| a.attribute(MC, "Ignorable").is_some_and(|v| v.split_whitespace().any(|prefix| a.namespace(prefix) == Some(uri))))
 }
-fn namespace_available(uri: &str, target: &str) -> bool {
+pub(crate) fn namespace_available(uri: &str, target: &str) -> bool {
     uri == MC
         || uri == "http://www.w3.org/XML/1998/namespace"
         || schema_index().namespace_versions.get(uri).is_some_and(|version| Some(*version) <= rank(target))
@@ -699,7 +818,7 @@ fn mc_validate(doc: &Document, id: usize, issues: &mut Vec<Value>) {
     }
 }
 
-fn effective(doc: &Document, id: usize, target: &str, skipped: &mut Vec<Value>, issues: &mut Vec<Value>) -> Vec<usize> {
+pub(crate) fn effective(doc: &Document, id: usize, target: &str, skipped: &mut Vec<Value>, issues: &mut Vec<Value>) -> Vec<usize> {
     let mut result = Vec::new();
     for child in children(doc, id) {
         let n = doc.node(child).unwrap();
@@ -910,7 +1029,8 @@ pub fn analyze_document(
             }
         }
     }
-    Ok(json!({"issues":issues,"target":target,"source":schema()["source"],"coverage":{"schema_nodes_checked":checked,
+    let xsd_checked = crate::xsd::validate(doc, target, &mut issues, &mut gaps)?;
+    Ok(json!({"issues":issues,"target":target,"source":schema()["source"],"coverage":{"schema_nodes_checked":checked,"xsd_roots_checked":xsd_checked,
         "semantic_checks":semantic_checked,"gaps":gaps,"skipped_regions":skipped,"complete":false}}))
 }
 
