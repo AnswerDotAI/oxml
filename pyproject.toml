@@ -1,12 +1,12 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.9.2,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "oxml"
 dynamic = ["version"]
 description = "Office Open XML client"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["fastcore>=2.2.26"]
 readme = "README.md"
