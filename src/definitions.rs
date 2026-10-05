@@ -1,5 +1,11 @@
 //! Explicit styles and numbering. Shared property helpers edit the existing native tree.
-use crate::{error::{Error, Result}, package::Package, package_schema, schema, text::{self, name, unique_child, W}, xml::{self, Document, NodeKind, Xml}};
+use crate::{
+    error::{Error, Result},
+    package::Package,
+    package_schema, schema,
+    text::{self, name, unique_child, W},
+    xml::{self, Document, NodeKind, Xml},
+};
 use pyo3::prelude::*;
 use std::collections::HashSet;
 
@@ -7,12 +13,8 @@ fn invalid(message: impl Into<String>) -> Error { Error::Invalid(message.into())
 pub fn children<'a>(doc: &'a Document, parent: usize, local: &'a str) -> Result<impl Iterator<Item = usize> + 'a> {
     Ok(doc.element_children(parent)?.filter(move |&id| name(doc, id) == Some(local)))
 }
-pub fn word_attribute<'a>(doc: &'a Document, id: usize, local: &str) -> Option<&'a str> {
-    doc.node(id).ok()?.element()?.attribute(W, local)
-}
-pub fn append(doc: &mut Document, parent: usize, local: &str) -> Result<usize> {
-    doc.add(Some(parent), NodeKind::Element(text::word_element(local)))
-}
+pub fn word_attribute<'a>(doc: &'a Document, id: usize, local: &str) -> Option<&'a str> { doc.node(id).ok()?.element()?.attribute(W, local) }
+pub fn append(doc: &mut Document, parent: usize, local: &str) -> Result<usize> { doc.add(Some(parent), NodeKind::Element(text::word_element(local))) }
 pub fn ensure(doc: &mut Document, parent: usize, local: &str) -> Result<usize> {
     if let Some(id) = unique_child(doc, parent, local)? { return Ok(id); }
     let position = schema::insertion_position(doc, parent, W, local)?;
@@ -43,8 +45,11 @@ fn integer(value: i64, label: &str, maximum: i64) -> Result<()> {
 }
 fn number(doc: &Document, id: usize, attr: &str) -> Result<i64> {
     doc.node(id)?;
-    word_attribute(doc, id, attr).ok_or_else(|| invalid(format!("Missing {attr}")))?.trim_matches([' ', '\t', '\r', '\n'])
-        .parse().map_err(|_| invalid(format!("Invalid {attr}")))
+    word_attribute(doc, id, attr)
+        .ok_or_else(|| invalid(format!("Missing {attr}")))?
+        .trim_matches([' ', '\t', '\r', '\n'])
+        .parse()
+        .map_err(|_| invalid(format!("Invalid {attr}")))
 }
 pub fn find_id(doc: &Document, root: usize, local: &str, attr: &str, value: i64) -> Result<Option<usize>> {
     let mut found = None;
@@ -63,21 +68,39 @@ pub fn next_id(doc: &Document, root: usize, local: &str, attr: &str, mut start: 
 }
 fn style_kind(doc: &Document, id: usize) -> &str { word_attribute(doc, id, "type").unwrap_or("paragraph") }
 fn style_target(kind: &str) -> Result<(&str, &str, &str)> {
-    match kind { "paragraph" => Ok(("p", "pPr", "pStyle")), "character" => Ok(("r", "rPr", "rStyle")), "table" => Ok(("tbl", "tblPr", "tblStyle")),
-        _ => Err(invalid("Style kind must be paragraph, character or table")) }
+    match kind {
+        "paragraph" => Ok(("p", "pPr", "pStyle")),
+        "character" => Ok(("r", "rPr", "rStyle")),
+        "table" => Ok(("tbl", "tblPr", "tblStyle")),
+        _ => Err(invalid("Style kind must be paragraph, character or table")),
+    }
 }
 fn style_lookup(doc: &Document, style_id: &str) -> Result<usize> {
     let found: Vec<_> = children(doc, doc.root, "style")?.filter(|&id| word_attribute(doc, id, "styleId") == Some(style_id)).collect();
     match found.as_slice() { [id] => Ok(*id), [] => Err(Error::Missing(style_id.into())), _ => Err(invalid("Multiple style IDs")) }
 }
 #[pyclass(module = "oxml._core")]
-pub struct Style { package: Package, #[pyo3(get)] pub xml: Xml, #[pyo3(get)] pub node_id: usize }
+pub struct Style {
+    package: Package,
+    #[pyo3(get)]
+    pub xml: Xml,
+    #[pyo3(get)]
+    pub node_id: usize,
+}
 #[pymethods]
 impl Style {
     #[getter]
-    pub fn id(&self) -> Result<Option<String>> { let doc = self.xml.read()?; doc.node(self.node_id)?; Ok(word_attribute(&doc, self.node_id, "styleId").map(str::to_owned)) }
+    pub fn id(&self) -> Result<Option<String>> {
+        let doc = self.xml.read()?;
+        doc.node(self.node_id)?;
+        Ok(word_attribute(&doc, self.node_id, "styleId").map(str::to_owned))
+    }
     #[getter]
-    pub fn kind(&self) -> Result<String> { let doc = self.xml.read()?; doc.node(self.node_id)?; Ok(style_kind(&doc, self.node_id).into()) }
+    pub fn kind(&self) -> Result<String> {
+        let doc = self.xml.read()?;
+        doc.node(self.node_id)?;
+        Ok(style_kind(&doc, self.node_id).into())
+    }
     #[getter]
     pub fn name(&self) -> Result<Option<String>> {
         let doc = self.xml.read()?;
@@ -98,7 +121,11 @@ impl Style {
 #[pyfunction]
 pub fn style_items(package: &Package) -> Result<Vec<Style>> {
     let Some(xml) = part_xml(package, "StyleDefinitionsPart", false)? else { return Ok(Vec::new()); };
-    let ids: Vec<_> = { let doc = xml.read()?; let nodes = children(&doc, doc.root, "style")?; nodes.collect() };
+    let ids: Vec<_> = {
+        let doc = xml.read()?;
+        let nodes = children(&doc, doc.root, "style")?;
+        nodes.collect()
+    };
     Ok(ids.into_iter().map(|node_id| Style { package: package.clone(), xml: xml.clone(), node_id }).collect())
 }
 #[pyfunction]
@@ -125,7 +152,15 @@ pub fn style_find(package: &Package, display_name: &str, kind: Option<&str>) -> 
 }
 #[pyfunction]
 #[pyo3(signature=(package, style_id, display_name, kind, based_on, paragraph, run))]
-pub fn style_add(package: &Package, style_id: &str, display_name: Option<&str>, kind: &str, based_on: Option<&str>, paragraph: Vec<Vec<u8>>, run: Vec<Vec<u8>>) -> Result<Style> {
+pub fn style_add(
+    package: &Package,
+    style_id: &str,
+    display_name: Option<&str>,
+    kind: &str,
+    based_on: Option<&str>,
+    paragraph: Vec<Vec<u8>>,
+    run: Vec<Vec<u8>>,
+) -> Result<Style> {
     if style_id.is_empty() { return Err(invalid("style_id requires a nonempty string")); }
     style_target(kind)?;
     let existing = part_xml(package, "StyleDefinitionsPart", false)?;
@@ -134,10 +169,9 @@ pub fn style_add(package: &Package, style_id: &str, display_name: Option<&str>, 
         if children(&doc, doc.root, "style")?.any(|id| word_attribute(&doc, id, "styleId") == Some(style_id)) {
             return Err(invalid("Style ID already exists"));
         }
-        if let Some(base) = based_on {
-            if style_kind(&doc, style_lookup(&doc, base)?) != kind { return Err(invalid("Base style must have the same kind")); }
-        }
-    } else if let Some(base) = based_on { return Err(Error::Missing(base.into())); }
+        if let Some(base) = based_on { if style_kind(&doc, style_lookup(&doc, base)?) != kind { return Err(invalid("Base style must have the same kind")); } }
+    }
+    else if let Some(base) = based_on { return Err(Error::Missing(base.into())); }
     if kind == "character" && !paragraph.is_empty() { return Err(invalid("Character styles cannot have paragraph properties")); }
     let mut source = Document::from_element(text::word_element("style"));
     let root = source.root;
@@ -147,19 +181,26 @@ pub fn style_add(package: &Package, style_id: &str, display_name: Option<&str>, 
     for (local, fragments) in [("pPr", paragraph), ("rPr", run)] {
         if fragments.is_empty() { continue; }
         let parent = append(&mut source, root, local)?;
-        for bytes in fragments { let child = xml::parse_bytes(&bytes)?; source.import(&child, child.root, Some(parent))?; }
+        for bytes in fragments {
+            let child = xml::parse_bytes(&bytes)?;
+            source.import(&child, child.root, Some(parent))?;
+        }
     }
     let xml = match existing { Some(xml) => xml, None => part_xml(package, "StyleDefinitionsPart", true)?.unwrap() };
-    let node_id = xml.edit(|doc| {
-        let position = schema::insertion_position(doc, doc.root, W, "style")?;
-        text::attach(doc, doc.root, position, &source)
-    })?;
+    let node_id = xml.edit(|doc| { let position = schema::insertion_position(doc, doc.root, W, "style")?; text::attach(doc, doc.root, position, &source) })?;
     Ok(Style { package: package.clone(), xml, node_id })
 }
 
 #[derive(Clone)]
 #[pyclass(module = "oxml._core", get_all, set_all, from_py_object)]
-pub struct Level { pub format: String, pub text: Option<String>, pub start: i64, pub indent: Option<i64>, pub hanging: i64, pub restart: Option<i64> }
+pub struct Level {
+    pub format: String,
+    pub text: Option<String>,
+    pub start: i64,
+    pub indent: Option<i64>,
+    pub hanging: i64,
+    pub restart: Option<i64>,
+}
 #[pymethods]
 impl Level {
     #[new]
@@ -170,9 +211,7 @@ impl Level {
 }
 impl Level {
     fn append(&self, doc: &mut Document, parent: usize, index: usize) -> Result<()> {
-        if !schema::enum_contains("DocumentFormat.OpenXml.Wordprocessing.NumberFormatValues", &self.format) {
-            return Err(invalid("Unknown numbering format"));
-        }
+        if !schema::enum_contains("DocumentFormat.OpenXml.Wordprocessing.NumberFormatValues", &self.format) { return Err(invalid("Unknown numbering format")); }
         let indent = self.indent.unwrap_or(720 * (index as i64 + 1));
         for (label, value) in [("start", self.start), ("indent", indent), ("hanging", self.hanging)] { integer(value, label, i32::MAX.into())?; }
         if let Some(restart) = self.restart { integer(restart, "restart", index as i64)?; }
@@ -194,11 +233,18 @@ impl Level {
     }
 }
 #[pyclass(module = "oxml._core")]
-pub struct NumberingInstance { package: Package, #[pyo3(get)] pub xml: Xml, #[pyo3(get)] pub node_id: usize }
+pub struct NumberingInstance {
+    package: Package,
+    #[pyo3(get)]
+    pub xml: Xml,
+    #[pyo3(get)]
+    pub node_id: usize,
+}
 impl NumberingInstance {
     fn definition_id(&self, doc: &Document) -> Result<usize> {
         let reference = unique_child(doc, self.node_id, "abstractNumId")?.ok_or_else(|| invalid("Numbering instance has no abstractNumId"))?;
-        find_id(doc, doc.root, "abstractNum", "abstractNumId", number(doc, reference, "val")?)?.ok_or_else(|| invalid("Abstract numbering definition does not exist"))
+        find_id(doc, doc.root, "abstractNum", "abstractNumId", number(doc, reference, "val")?)?
+            .ok_or_else(|| invalid("Abstract numbering definition does not exist"))
     }
     fn check_level(&self, doc: &Document, level: i64) -> Result<()> {
         integer(level, "level", 8)?;
@@ -220,12 +266,17 @@ impl NumberingInstance {
     #[pyo3(signature=(xml, id, level=0))]
     pub fn apply(&self, xml: &Xml, id: usize, level: i64) -> Result<()> {
         self.package.owner(xml)?;
-        let ident = { let doc = self.xml.read()?; self.check_level(&doc, level)?; number(&doc, self.node_id, "numId")? };
+        let ident = {
+            let doc = self.xml.read()?;
+            self.check_level(&doc, level)?;
+            number(&doc, self.node_id, "numId")?
+        };
         xml.edit(|doc| {
             if name(doc, id) != Some("p") { return Err(invalid("Numbering requires a paragraph")); }
             if let Some(properties) = unique_child(doc, id, "pPr")? {
                 if let Some(properties) = unique_child(doc, properties, "numPr")? {
-                    unique_child(doc, properties, "ilvl")?; unique_child(doc, properties, "numId")?;
+                    unique_child(doc, properties, "ilvl")?;
+                    unique_child(doc, properties, "numId")?;
                 }
             }
             let ppr = ensure(doc, id, "pPr")?;
@@ -247,13 +298,12 @@ impl NumberingInstance {
             let id = doc.copy(self.node_id, doc.root, position)?;
             set_word_attribute(doc, id, "numId", &ident.to_string())?;
             if let Some(durable) = durable { set_word_attribute(doc, id, "durableId", &durable.to_string())?; }
-            let override_id = if let Some(id) = find_id(doc, id, "lvlOverride", "ilvl", level)? { id }
-                else {
-                    let position = schema::insertion_position(doc, id, W, "lvlOverride")?;
-                    let c = doc.insert_kind(id, position, NodeKind::Element(text::word_element("lvlOverride")))?;
-                    set_word_attribute(doc, c, "ilvl", &level.to_string())?;
-                    c
-                };
+            let override_id = if let Some(id) = find_id(doc, id, "lvlOverride", "ilvl", level)? { id } else {
+                let position = schema::insertion_position(doc, id, W, "lvlOverride")?;
+                let c = doc.insert_kind(id, position, NodeKind::Element(text::word_element("lvlOverride")))?;
+                set_word_attribute(doc, c, "ilvl", &level.to_string())?;
+                c
+            };
             set_value(doc, override_id, "startOverride", &start.to_string())?;
             Ok(id)
         })?;
@@ -263,7 +313,11 @@ impl NumberingInstance {
 #[pyfunction]
 pub fn numbering_items(package: &Package) -> Result<Vec<NumberingInstance>> {
     let Some(xml) = part_xml(package, "NumberingDefinitionsPart", false)? else { return Ok(Vec::new()); };
-    let ids: Vec<_> = { let doc = xml.read()?; let nodes = children(&doc, doc.root, "num")?; nodes.collect() };
+    let ids: Vec<_> = {
+        let doc = xml.read()?;
+        let nodes = children(&doc, doc.root, "num")?;
+        nodes.collect()
+    };
     Ok(ids.into_iter().map(|node_id| NumberingInstance { package: package.clone(), xml: xml.clone(), node_id }).collect())
 }
 #[pyfunction]

@@ -1,6 +1,6 @@
 //! SDK descriptor interpreter. Unsupported mechanisms are reported, never treated as successful checks.
-use crate::xml::{Document, Node, NodeKind, Xml};
 use crate::error::{Error, Result};
+use crate::xml::{Document, Node, NodeKind, Xml};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -15,22 +15,11 @@ pub(crate) fn s(v: &Value) -> &str { v.as_str().unwrap_or("") }
 pub(crate) fn arr(v: &Value) -> &[Value] { v.as_array().map(Vec::as_slice).unwrap_or(&[]) }
 fn rank(v: &str) -> Option<u8> { if v.is_empty() { Some(0) } else { VERSIONS.iter().position(|version| *version == v).map(|i| i as u8) } }
 pub(crate) fn available(v: &str, target: &str) -> bool { matches!((rank(v), rank(target)), (Some(a), Some(b)) if a <= b) }
-pub fn check_target(target: &str) -> Result<()> {
-    if VERSIONS.contains(&target) { Ok(()) } else { Err(Error::Invalid("unknown validation target".into())) }
-}
-pub(crate) fn expanded(q: &str) -> (&str, &str) {
-    let (prefix, local) = q.split_once(':').unwrap_or(("", q));
-    (s(&schema()["namespaces"][prefix]), local)
-}
-fn matches(n: &Node, q: &str) -> bool {
-    let (uri, local) = expanded(q);
-    n.element().is_some_and(|e| e.name.local == local && e.name.uri == uri)
-}
+pub fn check_target(target: &str) -> Result<()> { if VERSIONS.contains(&target) { Ok(()) } else { Err(Error::Invalid("unknown validation target".into())) } }
+pub(crate) fn expanded(q: &str) -> (&str, &str) { let (prefix, local) = q.split_once(':').unwrap_or(("", q)); (s(&schema()["namespaces"][prefix]), local) }
+fn matches(n: &Node, q: &str) -> bool { let (uri, local) = expanded(q); n.element().is_some_and(|e| e.name.local == local && e.name.uri == uri) }
 fn qname(id: &str) -> &str { id.rsplit('/').next().unwrap_or("") }
-fn attribute<'a>(n: &'a Node, q: &str) -> Option<&'a str> {
-    let (uri, local) = expanded(q);
-    n.element()?.attribute(uri, local)
-}
+fn attribute<'a>(n: &'a Node, q: &str) -> Option<&'a str> { let (uri, local) = expanded(q); n.element()?.attribute(uri, local) }
 fn ancestors(doc: &Document, id: usize) -> impl Iterator<Item = &Node> {
     std::iter::successors(Some(id), |id| doc.node(*id).ok()?.parent).map(|id| doc.node(id).expect("live ancestor"))
 }
@@ -56,22 +45,31 @@ type FacadeType = (&'static str, &'static str, &'static str, bool, Vec<FacadeAtt
 
 #[pyfunction]
 pub fn facade_enums() -> Vec<FacadeEnum> {
-    schema()["enums"].as_object().unwrap().values().map(|e| {
-        let prefix = s(&e["Type"]).split(':').next().unwrap_or("");
-        let members = arr(&e["Facets"]).iter().map(|f| {
-            (f["Name"].as_str().filter(|n| !n.is_empty()).unwrap_or(s(&f["Value"])), s(&f["Value"]))
-        }).collect();
-        (s(&e["full_name"]), prefix, s(&e["Name"]), members)
-    }).collect()
+    schema()["enums"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|e| {
+            let prefix = s(&e["Type"]).split(':').next().unwrap_or("");
+            let members = arr(&e["Facets"]).iter().map(|f| (f["Name"].as_str().filter(|n| !n.is_empty()).unwrap_or(s(&f["Value"])), s(&f["Value"]))).collect();
+            (s(&e["full_name"]), prefix, s(&e["Name"]), members)
+        })
+        .collect()
 }
 
 #[pyfunction]
 pub fn facade_types() -> Vec<FacadeType> {
-    schema()["types"].as_object().unwrap().iter().filter(|(_, t)| !t["is_abstract"].as_bool().unwrap_or(false)).map(|(id, t)| {
-        let prefix = qname(id).split(':').next().unwrap_or("");
-        let attrs = arr(&t["attributes"]).iter().map(|a| (s(&a["PropertyName"]), s(&a["Type"]))).collect();
-        (id.as_str(), prefix, s(&t["class_name"]), t["is_text"].as_bool().unwrap_or(false), attrs)
-    }).collect()
+    schema()["types"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, t)| !t["is_abstract"].as_bool().unwrap_or(false))
+        .map(|(id, t)| {
+            let prefix = qname(id).split(':').next().unwrap_or("");
+            let attrs = arr(&t["attributes"]).iter().map(|a| (s(&a["PropertyName"]), s(&a["Type"]))).collect();
+            (id.as_str(), prefix, s(&t["class_name"]), t["is_text"].as_bool().unwrap_or(false), attrs)
+        })
+        .collect()
 }
 
 type QName = (&'static str, &'static str);
@@ -108,7 +106,10 @@ fn schema_index() -> &'static SchemaIndex {
         }
         for (name, ids) in &index.root_candidates {
             let modelled: Vec<&'static str> = ids.iter().copied().filter(|id| index.child_order.contains_key(id)).collect();
-            index.roots.insert(*name, if ids.len() == 1 { Some(ids[0]) } else if modelled.len() == 1 { Some(modelled[0]) } else { None });
+            index.roots.insert(
+                *name,
+                if ids.len() == 1 { Some(ids[0]) } else if modelled.len() == 1 { Some(modelled[0]) } else { None },
+            );
         }
         for (i, rule) in arr(&schema()["semantics"]).iter().enumerate() { index.semantics.entry(expanded(s(&rule["Context"]))).or_default().push((i, rule)); }
         for definition in schema()["enums"].as_object().unwrap().values() { index.enums.insert(s(&definition["full_name"]), definition); }
@@ -162,8 +163,7 @@ pub(crate) fn setting_attribute(name: &str) -> Result<&'static Value> {
     let index = schema_index();
     let w = expanded("w:settings").0;
     let parent = index.roots.get(&(w, "settings")).copied().flatten().unwrap();
-    let id = index.children[parent].get(&(w, name)).copied().flatten()
-        .ok_or_else(|| Error::Missing(format!("Unknown setting {name}")))?;
+    let id = index.children[parent].get(&(w, name)).copied().flatten().ok_or_else(|| Error::Missing(format!("Unknown setting {name}")))?;
     let t = &schema()["types"][id];
     let attrs = arr(&t["attributes"]);
     if t["is_leaf"] == true && attrs.len() == 1 && s(&attrs[0]["QName"]) == "w:val" { return Ok(&attrs[0]); }
@@ -173,15 +173,20 @@ pub(crate) fn setting_attribute(name: &str) -> Result<&'static Value> {
 /// Builder coercions come from enum values, not SDK type-name conventions.
 #[pyfunction]
 pub fn on_off_attributes() -> Vec<(&'static str, &'static str)> {
-    schema()["types"].as_object().unwrap().values().flat_map(|t| {
-        arr(&t["attributes"]).iter().filter_map(move |a| {
-            let kind = s(&a["Type"]).strip_prefix("EnumValue<")?.strip_suffix('>')?;
-            let e = schema_index().enums.get(kind)?;
-            let facets = arr(&e["Facets"]);
-            (facets.len() == 2 && facets.iter().any(|f| f["Value"] == "on") && facets.iter().any(|f| f["Value"] == "off"))
-                .then(|| (s(&t["qname"]), s(&a["QName"])))
+    schema()["types"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|t| {
+            arr(&t["attributes"]).iter().filter_map(move |a| {
+                let kind = s(&a["Type"]).strip_prefix("EnumValue<")?.strip_suffix('>')?;
+                let e = schema_index().enums.get(kind)?;
+                let facets = arr(&e["Facets"]);
+                (facets.len() == 2 && facets.iter().any(|f| f["Value"] == "on") && facets.iter().any(|f| f["Value"] == "off"))
+                    .then(|| (s(&t["qname"]), s(&a["QName"])))
+            })
         })
-    }).collect()
+        .collect()
 }
 
 #[pyfunction]
@@ -190,11 +195,9 @@ pub fn elements_of_type(xml: &Xml, type_id: Option<&str>, root: Option<usize>) -
     let doc = xml.read()?;
     let ids: Vec<usize> = match root { Some(r) => doc.descendants(r)?.filter(|&id| id != r).collect(), None => doc.element_ids() };
     if type_id.is_none() { return Ok(ids); }
-    ids.into_iter().filter_map(|id| match document_type(&doc, id) {
-        Ok(actual) if actual == type_id => Some(Ok(id)),
-        Err(error) => Some(Err(error)),
-        _ => None,
-    }).collect()
+    ids.into_iter()
+        .filter_map(|id| match document_type(&doc, id) { Ok(actual) if actual == type_id => Some(Ok(id)), Err(error) => Some(Err(error)), _ => None })
+        .collect()
 }
 
 #[pyfunction]
@@ -202,9 +205,7 @@ pub fn elements_of_type(xml: &Xml, type_id: Option<&str>, root: Option<usize>) -
 pub fn count_elements(xml: &Xml, type_id: Option<&str>) -> Result<usize> {
     let doc = xml.read()?;
     let mut count = 0;
-    for id in doc.descendants(doc.root)? {
-        if type_id.is_none() || document_type(&doc, id)? == type_id { count += 1; }
-    }
+    for id in doc.descendants(doc.root)? { if type_id.is_none() || document_type(&doc, id)? == type_id { count += 1; } }
     Ok(count)
 }
 
@@ -235,17 +236,12 @@ fn child_order(p: &'static Value) -> HashMap<QName, usize> {
     let (slots, mut ambiguous, unknown) = particle_slots(p);
     let mut order = HashMap::new();
     if unknown { return order; }
-    for (rank, names) in slots.into_iter().enumerate() {
-        for name in names { if order.insert(name, rank).is_some() { ambiguous.insert(name); } }
-    }
+    for (rank, names) in slots.into_iter().enumerate() { for name in names { if order.insert(name, rank).is_some() { ambiguous.insert(name); } } }
     order.retain(|name, _| !ambiguous.contains(name));
     order
 }
 
-fn qualified(uri: &str, local: &str) -> String {
-    let prefix = prefix_of(uri);
-    if prefix.is_empty() { local.into() } else { format!("{prefix}:{local}") }
-}
+fn qualified(uri: &str, local: &str) -> String { let prefix = prefix_of(uri); if prefix.is_empty() { local.into() } else { format!("{prefix}:{local}") } }
 /// The parent's schema type with its child slots, or `None` without a type or a content model.
 fn content_order(doc: &Document, parent: usize) -> Result<Option<(&'static str, &'static HashMap<QName, usize>)>> {
     Ok(document_type(doc, parent)?.and_then(|id| schema_index().child_order.get(id).map(|order| (id, order))))
@@ -292,8 +288,8 @@ fn sort_children(doc: &mut Document, parent: usize, mut ranks: Vec<(usize, usize
     if ranks.windows(2).any(|pair| pair[0].1 > pair[1].1) {
         ranks.sort_by_key(|&(_, rank)| rank);
         let mut sorted = ranks.iter().map(|&(id, _)| id);
-        let sequence: Vec<usize> = doc.node(parent)?.children.iter()
-            .map(|&id| if doc.node(id).is_ok_and(|n| n.element().is_some()) { sorted.next().unwrap() } else { id }).collect();
+        let sequence: Vec<usize> =
+            doc.node(parent)?.children.iter().map(|&id| if doc.node(id).is_ok_and(|n| n.element().is_some()) { sorted.next().unwrap() } else { id }).collect();
         *doc.sequence_mut(Some(parent))? = sequence;
     }
     Ok(ranks)
@@ -306,7 +302,9 @@ pub fn reorder(doc: &mut Document, parent: usize, deep: bool, strict: bool) -> R
     let ids: Vec<usize> = if deep { doc.descendants(parent)?.collect() } else { vec![parent] };
     for id in ids {
         match ranked(doc, id)? {
-            Some(ranks) => { sort_children(doc, id, ranks)?; }
+            Some(ranks) => {
+                sort_children(doc, id, ranks)?;
+            }
             None if strict && id == parent => return Err(Error::Invalid(unranked(doc, parent)?)),
             None => (),
         }
@@ -470,8 +468,22 @@ fn validator(v: &Value, value: &str, kind: &str, gaps: &mut BTreeSet<String>) ->
         return true;
     }
     // SDK TryGetValue applies bounds only to numeric primitives, not booleans, decimals or dates.
-    if name == "NumberValidator" && !matches!(kind, "ByteValue" | "SByteValue" | "Int16Value" | "UInt16Value" | "Int32Value" | "UInt32Value"
-        | "Int64Value" | "UInt64Value" | "IntegerValue" | "DoubleValue" | "SingleValue") { return true; }
+    if name == "NumberValidator"
+        && !matches!(
+            kind,
+            "ByteValue"
+                | "SByteValue"
+                | "Int16Value"
+                | "UInt16Value"
+                | "Int32Value"
+                | "UInt32Value"
+                | "Int64Value"
+                | "UInt64Value"
+                | "IntegerValue"
+                | "DoubleValue"
+                | "SingleValue"
+        )
+    { return true; }
     let number = value.trim_matches([' ', '\t', '\r', '\n']);
     arr(&v["Arguments"]).iter().all(|a| {
         let key = s(&a["Name"]);
@@ -563,7 +575,9 @@ pub(crate) fn checked_attribute(a: &Value, property: &str, value: &str, writing:
     let mut gaps = BTreeSet::new();
     let errors = check_attr(a, Some(value), "Microsoft365", &mut gaps);
     if !errors.is_empty() { return Err(Error::Invalid(format!("{property}: {value:?}: {}", errors.join(", ")))); }
-    if writing && !gaps.is_empty() { return Err(Error::Unsupported(format!("Unchecked setter constraints: {}", gaps.into_iter().collect::<Vec<_>>().join(", ")))); }
+    if writing && !gaps.is_empty() {
+        return Err(Error::Unsupported(format!("Unchecked setter constraints: {}", gaps.into_iter().collect::<Vec<_>>().join(", "))));
+    }
     Ok(())
 }
 
@@ -574,7 +588,10 @@ pub fn typed_attribute(xml: &Xml, id: usize, type_id: &str, property: &str) -> R
     let a = typed_descriptor(type_id, property)?;
     let Some(value) = attribute(doc.node(id)?, s(&a["QName"])) else { return Ok(None); };
     checked_attribute(a, property, value, false)?;
-    Ok(Some(match boolean(s(&a["Type"]), value) { Some(true) => "true", Some(false) => "false", None => value }.into()))
+    Ok(Some(
+        match boolean(s(&a["Type"]), value) { Some(true) => "true", Some(false) => "false", None => value }
+        .into(),
+    ))
 }
 
 #[pyfunction]
@@ -943,15 +960,8 @@ pub fn analyze_document(
     let mut issues = Vec::new();
     let mut gaps = BTreeSet::new();
     let mut skipped = Vec::new();
-    let mut semantic_context = SemanticContext {
-        doc,
-        dependencies,
-        relationships,
-        complete_dependencies,
-        target,
-        duplicates: HashMap::new(),
-        references: HashMap::new(),
-    };
+    let mut semantic_context =
+        SemanticContext { doc, dependencies, relationships, complete_dependencies, target, duplicates: HashMap::new(), references: HashMap::new() };
     let mut active = vec![(doc.root, resolve(doc.node(doc.root)?, None))];
     let mut checked = 0;
     let mut semantic_checked = 0;
@@ -1035,7 +1045,11 @@ pub fn analyze_document(
 }
 
 pub fn analyze_tree(
-    xml: &Xml, target: &str, dependencies: &HashMap<String, Xml>, relationships: Option<&HashMap<String, String>>, complete_dependencies: bool,
+    xml: &Xml,
+    target: &str,
+    dependencies: &HashMap<String, Xml>,
+    relationships: Option<&HashMap<String, String>>,
+    complete_dependencies: bool,
 ) -> Result<Value> {
     let doc = xml.read()?;
     let guards = dependencies.iter().map(|(name, xml)| Ok((name, xml.read()?))).collect::<Result<Vec<_>>>()?;
@@ -1046,8 +1060,12 @@ pub fn analyze_tree(
 #[pyfunction]
 #[pyo3(signature=(xml, target="Microsoft365", dependencies=None, relationships=None, complete_dependencies=false))]
 pub fn analyze(
-    py: Python<'_>, xml: &Xml, target: &str, dependencies: Option<HashMap<String, PyRef<'_, Xml>>>,
-    relationships: Option<HashMap<String, String>>, complete_dependencies: bool,
+    py: Python<'_>,
+    xml: &Xml,
+    target: &str,
+    dependencies: Option<HashMap<String, PyRef<'_, Xml>>>,
+    relationships: Option<HashMap<String, String>>,
+    complete_dependencies: bool,
 ) -> Result<String> {
     let deps = dependencies.unwrap_or_default().into_iter().map(|(name, xml)| (name, (*xml).clone())).collect();
     py.detach(|| analyze_tree(xml, target, &deps, relationships.as_ref(), complete_dependencies).map(|report| report.to_string()))

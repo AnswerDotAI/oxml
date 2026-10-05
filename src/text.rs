@@ -1,5 +1,8 @@
 //! Word text projections and edits over the native XML tree. Offsets count Unicode code points.
-use crate::{error::{Error, Result}, xml::{self, Document, Element, Name, NodeKind, Xml}};
+use crate::{
+    error::{Error, Result},
+    xml::{self, Document, Element, Name, NodeKind, Xml},
+};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
@@ -9,14 +12,24 @@ pub const XML: &str = "http://www.w3.org/XML/1998/namespace";
 pub const OPAQUE: &str = "\u{fffc}";
 fn invalid(message: &str) -> Error { Error::Invalid(message.into()) }
 pub(crate) fn unsupported(message: &str) -> Error { Error::Unsupported(message.into()) }
-pub fn name(doc: &Document, id: usize) -> Option<&str> {
-    doc.node(id).ok()?.element().filter(|e| e.name.uri == W).map(|e| e.name.local.as_str())
-}
+pub fn name(doc: &Document, id: usize) -> Option<&str> { doc.node(id).ok()?.element().filter(|e| e.name.uri == W).map(|e| e.name.local.as_str()) }
 pub fn container(name: &str) -> bool { matches!(name, "document" | "body" | "hdr" | "ftr" | "footnote" | "endnote" | "comment" | "tbl" | "tr" | "tc") }
-pub(crate) fn marker(name: &str) -> bool { matches!(name, "bookmarkStart" | "bookmarkEnd" | "commentRangeStart" | "commentRangeEnd" | "annotationRef" | "commentReference" | "footnoteRef" | "endnoteRef" | "footnoteReference" | "endnoteReference") }
-pub fn child(doc: &Document, id: usize, local: &str) -> Option<usize> {
-    doc.element_children(id).ok()?.find(|&id| name(doc, id) == Some(local))
+pub(crate) fn marker(name: &str) -> bool {
+    matches!(
+        name,
+        "bookmarkStart"
+            | "bookmarkEnd"
+            | "commentRangeStart"
+            | "commentRangeEnd"
+            | "annotationRef"
+            | "commentReference"
+            | "footnoteRef"
+            | "endnoteRef"
+            | "footnoteReference"
+            | "endnoteReference"
+    )
 }
+pub fn child(doc: &Document, id: usize, local: &str) -> Option<usize> { doc.element_children(id).ok()?.find(|&id| name(doc, id) == Some(local)) }
 pub fn unique_child(doc: &Document, parent: usize, local: &str) -> Result<Option<usize>> {
     let mut children = doc.element_children(parent)?.filter(|&id| name(doc, id) == Some(local));
     let result = children.next();
@@ -33,13 +46,51 @@ pub fn revision_name(doc: &Document, id: usize) -> Option<&str> {
     let e = doc.node(id).ok()?.element()?;
     let local = e.name.local.as_str();
     let known = if e.name.uri == W {
-        matches!(local, "ins" | "del" | "delText" | "delInstrText" | "cellIns" | "cellDel" | "cellMerge" | "numberingChange" |
-            "pPrChange" | "rPrChange" | "sectPrChange" | "tblGridChange" | "tblPrChange" | "tblPrExChange" | "tcPrChange" | "trPrChange" |
-            "moveFrom" | "moveTo" | "moveFromRangeStart" | "moveFromRangeEnd" | "moveToRangeStart" | "moveToRangeEnd" |
-            "customXmlInsRangeStart" | "customXmlInsRangeEnd" | "customXmlDelRangeStart" | "customXmlDelRangeEnd" |
-            "customXmlMoveFromRangeStart" | "customXmlMoveFromRangeEnd" | "customXmlMoveToRangeStart" | "customXmlMoveToRangeEnd")
-    } else { e.name.uri == W14 && matches!(local, "conflictIns" | "conflictDel" | "customXmlConflictInsRangeStart" |
-        "customXmlConflictInsRangeEnd" | "customXmlConflictDelRangeStart" | "customXmlConflictDelRangeEnd") };
+        matches!(
+            local,
+            "ins"
+                | "del"
+                | "delText"
+                | "delInstrText"
+                | "cellIns"
+                | "cellDel"
+                | "cellMerge"
+                | "numberingChange"
+                | "pPrChange"
+                | "rPrChange"
+                | "sectPrChange"
+                | "tblGridChange"
+                | "tblPrChange"
+                | "tblPrExChange"
+                | "tcPrChange"
+                | "trPrChange"
+                | "moveFrom"
+                | "moveTo"
+                | "moveFromRangeStart"
+                | "moveFromRangeEnd"
+                | "moveToRangeStart"
+                | "moveToRangeEnd"
+                | "customXmlInsRangeStart"
+                | "customXmlInsRangeEnd"
+                | "customXmlDelRangeStart"
+                | "customXmlDelRangeEnd"
+                | "customXmlMoveFromRangeStart"
+                | "customXmlMoveFromRangeEnd"
+                | "customXmlMoveToRangeStart"
+                | "customXmlMoveToRangeEnd"
+        )
+    } else {
+        e.name.uri == W14
+            && matches!(
+                local,
+                "conflictIns"
+                    | "conflictDel"
+                    | "customXmlConflictInsRangeStart"
+                    | "customXmlConflictInsRangeEnd"
+                    | "customXmlConflictDelRangeStart"
+                    | "customXmlConflictDelRangeEnd"
+            )
+    };
     known.then_some(local)
 }
 pub fn boundary_paragraph(doc: &Document, id: usize) -> Option<usize> {
@@ -56,7 +107,13 @@ pub fn context(doc: &Document, id: usize) -> Result<()> {
         if !container(local) && !matches!(local, "p" | "footnotes" | "endnotes" | "comments") {
             return Err(unsupported("Editing inside fields, content controls or other opaque containers is unsupported"));
         }
-        let properties = match local { "p" => "pPr", "tr" => "trPr", "tc" => "tcPr", "tbl" => "tblPr", _ => "" };
+        let properties = match local {
+            "p" => "pPr",
+            "tr" => "trPr",
+            "tc" => "tcPr",
+            "tbl" => "tblPr",
+            _ => "",
+        };
         for &properties in doc.node(id)?.children.iter().filter(|&&id| name(doc, id) == Some(properties)) {
             for element in doc.descendants(properties)? {
                 if let Some(revision) = revision_name(doc, element) {
@@ -78,7 +135,9 @@ pub fn unsafe_content(doc: &Document, id: usize) -> bool {
     }
 }
 fn text_of(doc: &Document, id: usize) -> String {
-    doc.node(id).map(|n| n.children.iter().filter_map(|id| match &doc.nodes[*id].as_ref()?.kind { NodeKind::Text(s) => Some(s.as_str()), _ => None }).collect()).unwrap_or_default()
+    doc.node(id)
+        .map(|n| { n.children.iter().filter_map(|id| match &doc.nodes[*id].as_ref()?.kind { NodeKind::Text(s) => Some(s.as_str()), _ => None }).collect() })
+        .unwrap_or_default()
 }
 pub fn token(doc: &Document, id: usize) -> Result<String> {
     let node = doc.node(id)?;
@@ -86,7 +145,19 @@ pub fn token(doc: &Document, id: usize) -> Result<String> {
         return Ok(if matches!(&node.kind, NodeKind::Text(s) if !s.trim().is_empty()) { OPAQUE.into() } else { String::new() });
     };
     Ok(match name(doc, id) {
-        Some("rPr" | "annotationRef" | "commentReference" | "footnoteRef" | "endnoteRef" | "footnoteReference" | "endnoteReference" | "fldChar" | "instrText" | "delInstrText" | "lastRenderedPageBreak") => String::new(),
+        Some(
+            "rPr"
+            | "annotationRef"
+            | "commentReference"
+            | "footnoteRef"
+            | "endnoteRef"
+            | "footnoteReference"
+            | "endnoteReference"
+            | "fldChar"
+            | "instrText"
+            | "delInstrText"
+            | "lastRenderedPageBreak",
+        ) => String::new(),
         Some("t" | "delText") => text_of(doc, id),
         Some("tab") => "\t".into(),
         Some("br" | "cr") if e.attribute(W, "type").unwrap_or("textWrapping") == "textWrapping" => "\u{b}".into(),
@@ -96,7 +167,9 @@ pub fn token(doc: &Document, id: usize) -> Result<String> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum View { Current, Original }
 impl View {
-    fn parse(value: &str) -> Result<Self> { match value { "current" => Ok(Self::Current), "original" => Ok(Self::Original), _ => Err(invalid("view must be current or original")) } }
+    fn parse(value: &str) -> Result<Self> {
+        match value { "current" => Ok(Self::Current), "original" => Ok(Self::Original), _ => Err(invalid("view must be current or original")) }
+    }
     fn label(self) -> &'static str { if self == Self::Current { "current" } else { "original" } }
 }
 #[derive(Clone, Copy, Debug)]
@@ -105,20 +178,42 @@ pub struct Span { pub element: Option<usize>, pub start: usize, pub end: usize }
 pub struct Barrier { pub start: usize, pub end: usize, pub revision: bool }
 /// A field in either form: `element` is the `fldSimple`, or the run holding its `begin` marker; `result` is its cached text.
 #[derive(Clone, Debug)]
-pub struct Field { pub start: usize, pub end: usize, pub result: (usize, usize), pub instruction: String, pub element: usize, pub separate: Option<usize>, pub close: Option<usize> }
+pub struct Field {
+    pub start: usize,
+    pub end: usize,
+    pub result: (usize, usize),
+    pub instruction: String,
+    pub element: usize,
+    pub separate: Option<usize>,
+    pub close: Option<usize>,
+}
 #[derive(Default, Debug)]
 pub struct Projection {
-    pub text: String, pub len: usize, pub spans: Vec<Span>, pub barriers: Vec<Barrier>, pub fields: Vec<Field>, pub positions: HashMap<usize, usize>,
+    pub text: String,
+    pub len: usize,
+    pub spans: Vec<Span>,
+    pub barriers: Vec<Barrier>,
+    pub fields: Vec<Field>,
+    pub positions: HashMap<usize, usize>,
     open: Vec<Field>,
 }
 impl Projection {
-    fn push(&mut self, value: &str) { self.text.push_str(value); self.len += value.chars().count(); }
+    fn push(&mut self, value: &str) {
+        self.text.push_str(value);
+        self.len += value.chars().count();
+    }
     fn block(&mut self, start: usize, end: usize, revision: bool) { self.barriers.push(Barrier { start, end, revision }); }
     fn field_marker(&mut self, run: usize, kind: &str) {
         let at = self.len;
         match kind {
             "begin" => self.open.push(Field { start: at, end: at, result: (at, at), instruction: String::new(), element: run, separate: None, close: None }),
-            "separate" => match self.open.last_mut() { Some(field) => { field.result.0 = at; field.separate = Some(run); } None => self.block(at, at, false) },
+            "separate" => match self.open.last_mut() {
+                Some(field) => {
+                    field.result.0 = at;
+                    field.separate = Some(run);
+                }
+                None => self.block(at, at, false),
+            },
             "end" => match self.open.pop() {
                 Some(mut field) => {
                     field.result.1 = at;
@@ -148,15 +243,17 @@ pub fn paragraph(doc: &Document, element: usize, view: View, positions: bool) ->
                         let value = token(doc, item)?;
                         let text = matches!(name(doc, item), Some("t" | "delText"));
                         if value == OPAQUE && !text { out.block(out.len, out.len + 1, false); }
-                        if matches!(doc.node(item)?.kind, NodeKind::Comment(_) | NodeKind::Pi { .. }) || matches!(name(doc, item), Some("annotationRef" | "footnoteRef" | "endnoteRef")) {
-                            out.block(out.len, out.len, false);
-                        }
+                        if matches!(doc.node(item)?.kind, NodeKind::Comment(_) | NodeKind::Pi { .. })
+                            || matches!(name(doc, item), Some("annotationRef" | "footnoteRef" | "endnoteRef"))
+                        { out.block(out.len, out.len, false); }
                         if text && doc.node(item)?.children.iter().any(|&id| !matches!(doc.nodes[id].as_ref().unwrap().kind, NodeKind::Text(_))) {
                             out.block(out.len, out.len + value.chars().count().max(1), false);
                         }
                         match name(doc, item) {
                             Some("fldChar") => out.field_marker(id, doc.node(item)?.element().unwrap().attribute(W, "fldCharType").unwrap_or("")),
-                            Some("instrText" | "delInstrText") => if let Some(field) = out.open.last_mut() { field.instruction.push_str(&text_of(doc, item)); },
+                            Some("instrText" | "delInstrText") => {
+                                if let Some(field) = out.open.last_mut() { field.instruction.push_str(&text_of(doc, item)); }
+                            }
                             _ => (),
                         }
                         out.push(&value);
@@ -197,8 +294,10 @@ pub fn paragraph(doc: &Document, element: usize, view: View, positions: bool) ->
     Ok(result)
 }
 pub fn marks(doc: &Document, paragraph: usize) -> Vec<usize> {
-    child(doc, paragraph, "pPr").and_then(|p| child(doc, p, "rPr")).map(|p| doc.nodes[p].as_ref().unwrap().children.iter()
-        .copied().filter(|&id| matches!(name(doc, id), Some("ins" | "del"))).collect()).unwrap_or_default()
+    child(doc, paragraph, "pPr")
+        .and_then(|p| child(doc, p, "rPr"))
+        .map(|p| doc.nodes[p].as_ref().unwrap().children.iter().copied().filter(|&id| matches!(name(doc, id), Some("ins" | "del"))).collect())
+        .unwrap_or_default()
 }
 pub fn adjacent(doc: &Document, first: usize, second: usize) -> Result<bool> {
     let parent = doc.node(first)?.parent;
@@ -210,12 +309,17 @@ pub fn adjacent(doc: &Document, first: usize, second: usize) -> Result<bool> {
 pub struct Row { pub paragraph: Option<usize>, pub position: usize, pub projection: Projection }
 pub fn paragraphs(doc: &Document, root: usize, view: View) -> Result<Vec<Row>> {
     fn walk(doc: &Document, id: usize, adjacent: bool, out: &mut Vec<(Option<usize>, bool)>) -> Result<()> {
-        if name(doc, id) == Some("p") { out.push((Some(id), adjacent)); return Ok(()); }
+        if name(doc, id) == Some("p") {
+            out.push((Some(id), adjacent));
+            return Ok(());
+        }
         let mut previous = None;
         for &id in &doc.node(id)?.children {
             if doc.node(id)?.element().is_none() { continue; }
             let local = name(doc, id);
-            if local.is_some_and(|n| container(n) || n == "p") { walk(doc, id, local == Some("p") && previous == Some("p"), out)?; }
+            if local.is_some_and(|n| container(n) || n == "p") {
+                walk(doc, id, local == Some("p") && previous == Some("p"), out)?;
+            }
             else if !matches!(local, Some("pPr" | "tblPr" | "tblGrid" | "trPr" | "tcPr" | "sectPr")) { out.push((None, false)); }
             previous = local;
         }
@@ -231,9 +335,15 @@ pub fn paragraphs(doc: &Document, root: usize, view: View) -> Result<Vec<Row>> {
             let hidden = adjacent && marks.len() == 1 && name(doc, marks[0]) == Some(if view == View::Current { "del" } else { "ins" });
             if !hidden { position += 1; }
         }
-        let projection = match id { Some(id) => paragraph(doc, id, view, false)?, None => {
-            let mut projection = Projection::default(); projection.push(OPAQUE); projection.block(0, 1, false); projection
-        }};
+        let projection = match id {
+            Some(id) => paragraph(doc, id, view, false)?,
+            None => {
+                let mut projection = Projection::default();
+                projection.push(OPAQUE);
+                projection.block(0, 1, false);
+                projection
+            }
+        };
         let len = projection.len;
         result.push(Row { paragraph: id, position, projection });
         position += len;
@@ -254,31 +364,33 @@ fn slice(value: &str, start: usize, end: usize) -> String { value.chars().skip(s
 
 /// A detached XML shell used only to snapshot the formatting that an edit will reuse.
 pub fn shell(doc: &Document, template: Option<usize>, properties: &[usize]) -> Result<Document> {
-    let element = match template {
-        Some(id) => doc.node(id)?.element().ok_or_else(|| invalid("Expected an XML element"))?.clone(),
-        None => word_element("r"),
-    };
+    let element = match template { Some(id) => doc.node(id)?.element().ok_or_else(|| invalid("Expected an XML element"))?.clone(), None => word_element("r") };
     let mut result = Document::from_element(element);
     for &id in properties { result.import(doc, id, Some(result.root))?; }
     Ok(result)
 }
 pub fn word_element(local: &str) -> Element {
-    Element { name: Name { uri: W.into(), local: local.into(), prefix: "w".into() }, attributes: Vec::new(),
-        namespaces: vec![(String::new(), String::new()), ("xml".into(), XML.into()), ("w".into(), W.into())] }
+    Element {
+        name: Name { uri: W.into(), local: local.into(), prefix: "w".into() },
+        attributes: Vec::new(),
+        namespaces: vec![(String::new(), String::new()), ("xml".into(), XML.into()), ("w".into(), W.into())],
+    }
 }
-pub fn attach(doc: &mut Document, parent: usize, index: usize, source: &Document) -> Result<usize> {
-    doc.import_at(source, source.root, parent, index)
-}
+pub fn attach(doc: &mut Document, parent: usize, index: usize, source: &Document) -> Result<usize> { doc.import_at(source, source.root, parent, index) }
 pub fn run_text(doc: &Document, template: Option<usize>, text: &str) -> Result<Document> {
     if text.contains(['\n', '\r']) { return Err(unsupported("Paragraph insertion/joining is unsupported; use \\v for a line break")); }
     if !text.chars().all(|c| c == '\u{b}' || xml::xml_char(c)) { return Err(invalid("Illegal XML character")); }
-    let properties = template.map(|id| doc.nodes[id].as_ref().unwrap().children.iter().copied()
-        .filter(|&id| name(doc, id) == Some("rPr")).collect::<Vec<_>>()).unwrap_or_default();
+    let properties = template
+        .map(|id| doc.nodes[id].as_ref().unwrap().children.iter().copied().filter(|&id| name(doc, id) == Some("rPr")).collect::<Vec<_>>())
+        .unwrap_or_default();
     let mut result = shell(doc, template, &properties)?;
     let mut start = 0;
     let append = |result: &mut Document, local: &str, value: &str| -> Result<()> {
         let id = result.add(Some(result.root), NodeKind::Element(word_element(local)))?;
-        if local == "t" { result.set_attribute(id, XML, "space", "preserve", None)?; result.set_text(id, value)?; }
+        if local == "t" {
+            result.set_attribute(id, XML, "space", "preserve", None)?;
+            result.set_text(id, value)?;
+        }
         Ok(())
     };
     for (index, c) in text.char_indices() {
@@ -303,9 +415,11 @@ pub fn split_run(doc: &mut Document, run: usize, offset: usize) -> Result<usize>
         let end = position + value.chars().count();
         if position < offset && offset < end {
             for (id, value) in [(id, slice(&value, 0, offset - position)), (other, slice(&value, offset - position, end - position))] {
-                doc.set_text(id, &value)?; doc.set_attribute(id, XML, "space", "preserve", None)?;
+                doc.set_text(id, &value)?;
+                doc.set_attribute(id, XML, "space", "preserve", None)?;
             }
-        } else if end <= offset && (!value.is_empty() || position < offset) { doc.remove(other)?; }
+        }
+        else if end <= offset && (!value.is_empty() || position < offset) { doc.remove(other)?; }
         else { doc.remove(id)?; }
         position = end;
     }
@@ -325,8 +439,14 @@ fn complex_field(doc: &mut Document, parent: usize, index: usize, instruction: &
     code.set_attribute(element, XML, "space", "preserve", Some("xml"))?;
     code.insert_kind(element, 0, NodeKind::Text(instruction.into()))?;
     let mut at = index;
-    for run in [marker("begin")?, code, marker("separate")?] { attach(doc, parent, at, &run)?; at += 1; }
-    for id in content { doc.move_node(id, parent, at)?; at += 1; }
+    for run in [marker("begin")?, code, marker("separate")?] {
+        attach(doc, parent, at, &run)?;
+        at += 1;
+    }
+    for id in content {
+        doc.move_node(id, parent, at)?;
+        at += 1;
+    }
     attach(doc, parent, at, &marker("end")?)?;
     Ok(())
 }
@@ -373,10 +493,19 @@ pub fn boundary(doc: &mut Document, paragraph_id: usize, offset: usize, cut: Cut
     let fields = projected.fields.iter();
     // An offset at a field's start is before the field, not inside its zero-width markers, unless the range is its result.
     let placed = if cut == Cut::Inside {
-        fields.clone().filter(|f| f.result.0 == offset).filter_map(|f| f.separate.and_then(index_of)).map(|i| i + 1).max()
+        fields
+            .clone()
+            .filter(|f| f.result.0 == offset)
+            .filter_map(|f| f.separate.and_then(index_of))
+            .map(|i| i + 1)
+            .max()
             .or_else(|| fields.clone().filter(|f| f.result.1 == offset).filter_map(|f| f.close.and_then(index_of)).min())
     } else {
-        fields.clone().filter(|f| f.start == offset).filter_map(|f| index_of(f.element)).min()
+        fields
+            .clone()
+            .filter(|f| f.start == offset)
+            .filter_map(|f| index_of(f.element))
+            .min()
             .or_else(|| fields.clone().filter(|f| f.end == offset).filter_map(|f| f.close.and_then(index_of)).map(|i| i + 1).max())
     };
     if let Some(index) = placed { return Ok(index); }
@@ -385,8 +514,8 @@ pub fn boundary(doc: &mut Document, paragraph_id: usize, offset: usize, cut: Cut
         let opens = span.element.is_some_and(|id| matches!(name(doc, id), Some("bookmarkStart" | "commentRangeStart")));
         if span.start == offset && (offset < span.end || opens && cut == Cut::Insertion) { return Ok(index); }
         if span.start < offset && offset < span.end {
-            let run = span.element.filter(|&id| name(doc, id) == Some("r") && !history(doc, id))
-                .ok_or_else(|| unsupported("Boundary is inside protected XML"))?;
+            let run =
+                span.element.filter(|&id| name(doc, id) == Some("r") && !history(doc, id)).ok_or_else(|| unsupported("Boundary is inside protected XML"))?;
             return split_run(doc, run, offset - span.start);
         }
     }
@@ -394,7 +523,14 @@ pub fn boundary(doc: &mut Document, paragraph_id: usize, offset: usize, cut: Cut
     Err(unsupported("Cannot place a boundary inside opaque XML"))
 }
 #[derive(Clone, Copy, Debug)]
-pub struct Selection { pub paragraph: usize, pub start: usize, pub end: usize, pub template: Option<usize>, pub anchor: bool, pub cut: Cut }
+pub struct Selection {
+    pub paragraph: usize,
+    pub start: usize,
+    pub end: usize,
+    pub template: Option<usize>,
+    pub anchor: bool,
+    pub cut: Cut,
+}
 pub fn preflight(doc: &Document, paragraph_id: usize, projected: &Projection, start: usize, end: usize, anchor: bool, whole: bool) -> Result<Selection> {
     context(doc, paragraph_id)?;
     if !anchor && unsafe_content(doc, paragraph_id) { return Err(unsupported("Content controls, textboxes and moves are unsupported")); }
@@ -402,7 +538,9 @@ pub fn preflight(doc: &Document, paragraph_id: usize, projected: &Projection, st
         let blocked = if revision {
             if a == b { start < a && a < end } else if start == end { a < start && start < b } else { start < b && end > a }
         } else { start < b && end > a || start == end && a <= start && start < b || a == b && start <= a && a <= end };
-        if blocked && !(anchor && !revision && start <= a && b <= end) { return Err(unsupported("Range touches a revision, hyperlink or opaque XML boundary")); }
+        if blocked && !(anchor && !revision && start <= a && b <= end) {
+            return Err(unsupported("Range touches a revision, hyperlink or opaque XML boundary"));
+        }
     }
     // A range may lie inside a field's result or contain the whole field, but never cross its boundary.
     for field in &projected.fields {
@@ -418,21 +556,43 @@ pub fn preflight(doc: &Document, paragraph_id: usize, projected: &Projection, st
     Ok(Selection { paragraph: paragraph_id, start, end, template, anchor, cut })
 }
 #[derive(Debug)]
-pub struct Isolated { pub paragraph: usize, pub runs: Vec<usize>, pub index: usize, pub stop: usize, pub template: Option<usize> }
+pub struct Isolated {
+    pub paragraph: usize,
+    pub runs: Vec<usize>,
+    pub index: usize,
+    pub stop: usize,
+    pub template: Option<usize>,
+}
 pub fn isolate(doc: &mut Document, selection: Selection, extract_references: bool) -> Result<Isolated> {
     let Selection { paragraph: p, start, end, template, anchor, cut } = selection;
     // Word rewrites a simple field in the complex form when editing it: a boundary inside one, or a replacement containing one, converts it first.
     let inside = |f: &Field, offset| f.start < offset && offset < f.end;
-    let simple = paragraph(doc, p, View::Current, false)?.fields.into_iter()
+    let simple = paragraph(doc, p, View::Current, false)?
+        .fields
+        .into_iter()
         .filter(|f| name(doc, f.element) == Some("fldSimple") && (inside(f, start) || inside(f, end) || !anchor && start <= f.start && f.end <= end))
-        .map(|f| f.element).collect::<Vec<_>>();
+        .map(|f| f.element)
+        .collect::<Vec<_>>();
     for field in simple { expand_field(doc, field)?; }
     let index = boundary(doc, p, start, cut)?;
     let stop = boundary(doc, p, end, cut)?;
     // Runs overlapping the range, plus the zero-width field markers cut into it by a whole-field boundary.
     let projected = paragraph(doc, p, View::Current, false)?;
-    let runs = projected.spans.iter().enumerate().filter_map(|(i, s)| s.element.filter(|&id| name(doc, id) == Some("r") && (s.start < end && s.end > start ||
-        (index..stop).contains(&i) && doc.node(id).ok().is_some_and(|n| n.children.iter().any(|&c| matches!(name(doc, c), Some("fldChar" | "instrText" | "delInstrText")))))))
+    let runs = projected
+        .spans
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            s.element.filter(|&id| {
+                name(doc, id) == Some("r")
+                    && (s.start < end && s.end > start
+                        || (index..stop).contains(&i)
+                            && doc
+                                .node(id)
+                                .ok()
+                                .is_some_and(|n| n.children.iter().any(|&c| matches!(name(doc, c), Some("fldChar" | "instrText" | "delInstrText")))))
+            })
+        })
         .collect::<Vec<_>>();
     if extract_references {
         for &run in &runs {
@@ -456,9 +616,10 @@ pub fn check_paragraph(doc: &Document, id: usize, boundaries: bool, history: boo
         unique_child(doc, properties, "rPr")?;
         for element in doc.descendants(properties)? {
             if name(doc, element) == Some("sectPr") { return Err(unsupported("Editing section-break paragraphs is unsupported")); }
-            if revision_name(doc, element).is_some() && !(boundaries && boundary_paragraph(doc, element).is_some()) && !(history && matches!(name(doc, element), Some("pPrChange" | "rPrChange"))) {
-                return Err(unsupported("Paragraph edits cannot discard existing property/boundary revisions"));
-            }
+            if revision_name(doc, element).is_some()
+                && !(boundaries && boundary_paragraph(doc, element).is_some())
+                && !(history && matches!(name(doc, element), Some("pPrChange" | "rPrChange")))
+            { return Err(unsupported("Paragraph edits cannot discard existing property/boundary revisions")); }
         }
     }
     if marks(doc, id).len() > 1 { return Err(unsupported("Conflicting paragraph-boundary revisions are unsupported")); }
@@ -470,9 +631,13 @@ pub fn split_at(doc: &mut Document, paragraph: usize, index: usize, snapshot: Op
     let properties = unique_child(doc, paragraph, "pPr")?;
     let prefix = doc.node(paragraph)?.children[..index].iter().copied().filter(|id| Some(*id) != properties).collect::<Vec<_>>();
     let own_shell;
-    let snapshot = match snapshot { Some(snapshot) => snapshot, None => {
-        own_shell = shell(doc, Some(paragraph), &properties.into_iter().collect::<Vec<_>>())?; &own_shell
-    }};
+    let snapshot = match snapshot {
+        Some(snapshot) => snapshot,
+        None => {
+            own_shell = shell(doc, Some(paragraph), &properties.into_iter().collect::<Vec<_>>())?;
+            &own_shell
+        }
+    };
     let left = attach(doc, parent, location, snapshot)?;
     for local in ["paraId", "textId"] { doc.remove_attribute(left, W14, local)?; }
     for mark in marks(doc, left) { doc.remove(mark)?; }
@@ -533,14 +698,17 @@ pub fn prepare_parts(doc: &Document, root: usize, start: usize, end: usize, brea
     let single = rows.iter().find(|r| r.paragraph.is_some() && r.position <= start && end <= r.position + r.projection.len);
     let multiline = breaks || single.is_none();
     let parts = if multiline { span_parts(doc, &rows, start, end)? } else {
-        let row = single.unwrap(); vec![preflight(doc, row.paragraph.unwrap(), &row.projection, start - row.position, end - row.position, false, false)?]
+        let row = single.unwrap();
+        vec![preflight(doc, row.paragraph.unwrap(), &row.projection, start - row.position, end - row.position, false, false)?]
     };
     Ok((parts, multiline))
 }
 pub fn prepare_replacement(doc: &Document, root: usize, start: usize, end: usize, text: &str) -> Result<(Vec<Selection>, Vec<Vec<Document>>, bool)> {
     if text.contains('\r') { return Err(invalid("Use \\n for paragraph boundaries")); }
     let (parts, multiline) = prepare_parts(doc, root, start, end, text.contains('\n'))?;
-    let chunks = text.split('\n').map(|chunk| if chunk.is_empty() { Ok(Vec::new()) } else { run_text(doc, parts[0].template, chunk).map(|run| vec![run]) })
+    let chunks = text
+        .split('\n')
+        .map(|chunk| if chunk.is_empty() { Ok(Vec::new()) } else { run_text(doc, parts[0].template, chunk).map(|run| vec![run]) })
         .collect::<Result<_>>()?;
     Ok((parts, chunks, multiline))
 }
@@ -610,7 +778,12 @@ impl Story {
 }
 #[pyclass(name = "NativeRange", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Range { pub story: Story, pub start: usize, pub end: usize, pub revision: u64 }
+pub struct Range {
+    pub story: Story,
+    pub start: usize,
+    pub end: usize,
+    pub revision: u64,
+}
 impl Range {
     pub fn check(&self) -> Result<()> {
         self.story.xml.read()?.node(self.story.element)?;
@@ -654,7 +827,10 @@ impl Range {
             for part in &isolated[1..] { paragraph = join(doc, paragraph, part.paragraph)?; }
             let mut index = if multiline { content_start(doc, paragraph)? + prefix } else { isolated[0].index };
             for (i, chunk) in expressions.iter().enumerate() {
-                for expression in chunk { attach(doc, paragraph, index, expression)?; index += 1; }
+                for expression in chunk {
+                    attach(doc, paragraph, index, expression)?;
+                    index += 1;
+                }
                 if i + 1 < expressions.len() {
                     (_, paragraph) = split_at(doc, paragraph, index, left_shell.as_ref())?;
                     index = content_start(doc, paragraph)?;

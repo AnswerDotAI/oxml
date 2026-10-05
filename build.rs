@@ -1,6 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    pyo3_build_config::add_extension_module_link_args();
     println!("cargo:rerun-if-changed=schema/xsd");
     let directory = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("schema/xsd");
     let mut paths: Vec<_> = fs::read_dir(directory).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "xsd")).collect();

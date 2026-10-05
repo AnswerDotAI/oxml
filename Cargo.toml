@@ -9,6 +9,9 @@ description = "Office Open XML client"
 name = "oxml"
 crate-type = ["cdylib", "rlib"]
 
+[profile.test]
+inherits = "release"
+
 [profile.release]
 lto = false
 codegen-units = 16
@@ -27,7 +30,7 @@ strip = true
 incremental = false
 
 [dependencies]
-pyo3 = ">=0.28"
+pyo3 = { version = ">=0.28", features = ["extension-module"] }
 quick-xml = { version = ">=0.42.0", features = ["encoding"] }
 zip = { version = ">=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tempfile = ">=3.27.0"
@@ -38,5 +41,5 @@ chrono = { version = ">=0.4.45", default-features = false, features = ["std"] }
 libxml = ">=0.3.21"
 similar = { version = ">=3.2.0", default-features = false, features = ["text", "unicode"] }
 
-[features]
-extension-module = ["pyo3/extension-module"]
+[build-dependencies]
+pyo3-build-config = "0.29"

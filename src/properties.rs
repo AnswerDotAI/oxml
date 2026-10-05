@@ -1,6 +1,12 @@
 //! Core properties and flat document settings over the native package and schema.
-use crate::{error::{Error, Result}, package::Package, package_schema, schema::{self, s}, text::{self, W},
-    xml::{Document, Element, Name, Xml}};
+use crate::{
+    error::{Error, Result},
+    package::Package,
+    package_schema,
+    schema::{self, s},
+    text::{self, W},
+    xml::{Document, Element, Name, Xml},
+};
 use pyo3::prelude::*;
 
 const CORE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
@@ -17,8 +23,11 @@ fn core_prefix(name: &str) -> Result<&'static str> {
 }
 fn element(prefix: &str, local: &str) -> Element {
     let uri = s(&schema::schema()["namespaces"][prefix]);
-    Element { name: Name { uri: uri.into(), local: local.into(), prefix: prefix.into() }, attributes: Vec::new(),
-        namespaces: vec![("".into(), "".into()), ("xml".into(), text::XML.into()), (prefix.into(), uri.into())] }
+    Element {
+        name: Name { uri: uri.into(), local: local.into(), prefix: prefix.into() },
+        attributes: Vec::new(),
+        namespaces: vec![("".into(), "".into()), ("xml".into(), text::XML.into()), (prefix.into(), uri.into())],
+    }
 }
 fn find(doc: &Document, uri: &str, local: &str) -> Result<Option<usize>> {
     let mut found = None;
@@ -43,8 +52,10 @@ impl Properties {
             package.relationship_target("/", &relation.target)?
         } else {
             if !create { return Ok(None); }
-            let uri = (0..).map(|i| if i == 0 { "/docProps/core.xml".into() } else { format!("/docProps/core{i}.xml") })
-                .find(|uri| package.existing(uri).is_err()).unwrap();
+            let uri = (0..)
+                .map(|i| if i == 0 { "/docProps/core.xml".into() } else { format!("/docProps/core{i}.xml") })
+                .find(|uri| package.existing(uri).is_err())
+                .unwrap();
             let root = Document::from_element(element("cp", "coreProperties"));
             package.add_part(&uri, CORE_CT, &root.serialize()?)?;
             package.add_relationship("/", CORE_REL, &uri, "Internal", None)?;
@@ -85,26 +96,27 @@ impl Properties {
                     doc.declare_namespace(id, "dcterms", uri)?;
                     doc.set_attribute_ns(id, XSI, "type", "dcterms:W3CDTF", "xsi")?;
                 }
-            } else { doc.import_at(&source, source.root, doc.root, doc.node(doc.root)?.children.len())?; }
+            }
+            else { doc.import_at(&source, source.root, doc.root, doc.node(doc.root)?.children.len())?; }
             Ok(())
         })
     }
     pub fn remove(&self, name: &str) -> Result<()> {
         let expected = element(core_prefix(name)?, name);
         let xml = self.xml(false)?.ok_or_else(|| Error::Missing(name.into()))?;
-        xml.edit(|doc| {
-            let id = find(doc, &expected.name.uri, name)?.ok_or_else(|| Error::Missing(name.into()))?;
-            doc.remove(id)
-        })
+        xml.edit(|doc| { let id = find(doc, &expected.name.uri, name)?.ok_or_else(|| Error::Missing(name.into()))?; doc.remove(id) })
     }
     pub fn keys(&self) -> Result<Vec<String>> {
         let Some(xml) = self.xml(false)? else { return Ok(Vec::new()); };
         let doc = xml.read()?;
-        let keys = doc.element_children(doc.root)?.filter_map(|id| {
-            let name = &doc.node(id).ok()?.element()?.name;
-            let prefix = core_prefix(&name.local).ok()?;
-            (name.uri == s(&schema::schema()["namespaces"][prefix])).then(|| name.local.clone())
-        }).collect();
+        let keys = doc
+            .element_children(doc.root)?
+            .filter_map(|id| {
+                let name = &doc.node(id).ok()?.element()?.name;
+                let prefix = core_prefix(&name.local).ok()?;
+                (name.uri == s(&schema::schema()["namespaces"][prefix])).then(|| name.local.clone())
+            })
+            .collect();
         Ok(keys)
     }
 }
@@ -167,10 +179,13 @@ impl Settings {
     pub fn keys(&self) -> Result<Vec<String>> {
         let Some(xml) = self.xml(false)? else { return Ok(Vec::new()); };
         let doc = xml.read()?;
-        let keys = doc.element_children(doc.root)?.filter_map(|id| {
-            let name = &doc.node(id).ok()?.element()?.name;
-            (name.uri == W && schema::setting_attribute(&name.local).is_ok()).then(|| name.local.clone())
-        }).collect();
+        let keys = doc
+            .element_children(doc.root)?
+            .filter_map(|id| {
+                let name = &doc.node(id).ok()?.element()?.name;
+                (name.uri == W && schema::setting_attribute(&name.local).is_ok()).then(|| name.local.clone())
+            })
+            .collect();
         Ok(keys)
     }
 }

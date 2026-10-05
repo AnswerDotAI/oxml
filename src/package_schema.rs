@@ -28,16 +28,18 @@ fn part_index() -> &'static PartIndex {
         }
         for (name, info) in schema()["parts"].as_object().unwrap() {
             let local = s(&info["RootElement"]);
-            let root = if let Some(root) = info["Root"].as_str() {
-                Some((s(&schema()["namespaces"][root.split(':').next().unwrap_or("")]), local))
-            } else { roots.get(local).filter(|names| names.len() == 1).and_then(|names| names.iter().next().copied()) };
+            let root = if let Some(root) = info["Root"].as_str() { Some((s(&schema()["namespaces"][root.split(':').next().unwrap_or("")]), local)) } else { roots.get(local).filter(|names| names.len() == 1).and_then(|names| names.iter().next().copied()) };
             index.roots.insert(name, root);
-            index.rules.insert(name, arr(&info["Children"]).iter().filter_map(|rule| {
-                let info = part(rule["Name"].as_str());
-                info["RelationshipType"].as_str().map(|kind| (kind, (rule, info)))
-            }).collect());
+            index.rules.insert(
+                name,
+                arr(&info["Children"])
+                    .iter()
+                    .filter_map(|rule| { let info = part(rule["Name"].as_str()); info["RelationshipType"].as_str().map(|kind| (kind, (rule, info))) })
+                    .collect(),
+            );
         }
-        index.paths = arr(&schema()["semantics"]).iter().filter_map(|r| s(&r["Test"]).split_once("document('Part:")?.1.split_once("')").map(|(path, _)| path)).collect();
+        index.paths =
+            arr(&schema()["semantics"]).iter().filter_map(|r| s(&r["Test"]).split_once("document('Part:")?.1.split_once("')").map(|(path, _)| path)).collect();
         index
     })
 }
@@ -75,7 +77,12 @@ impl RelatedPart {
         json!({"id":r.id,"type":r.kind,"target":r.target,"target_mode":r.mode,"part_uri":self.uri,"part_name":self.name})
     }
 }
-struct Entry { uri: String, name: Option<&'static str>, relationships: Vec<RelatedPart>, errors: Vec<Value> }
+struct Entry {
+    uri: String,
+    name: Option<&'static str>,
+    relationships: Vec<RelatedPart>,
+    errors: Vec<Value>,
+}
 
 fn related_parts(package: &PackageData) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
@@ -105,8 +112,11 @@ fn related_parts(package: &PackageData) -> Result<Vec<Entry>> {
                         if uri == package.main_part() { rel.name = Some("MainDocumentPart"); }
                         if rel.name.is_none() {
                             let content_type = package.content_type(&uri)?;
-                            let mut candidates = schema()["parts"].as_object().unwrap().iter().filter(|(_, info)|
-                                s(&info["RelationshipType"]) == rel.relationship.kind && s(&info["ContentType"]) == content_type);
+                            let mut candidates = schema()["parts"]
+                                .as_object()
+                                .unwrap()
+                                .iter()
+                                .filter(|(_, info)| s(&info["RelationshipType"]) == rel.relationship.kind && s(&info["ContentType"]) == content_type);
                             let candidate = candidates.next();
                             if candidates.next().is_none() { rel.name = candidate.map(|(name, _)| name.as_str()); }
                         }
@@ -127,17 +137,17 @@ fn related_parts(package: &PackageData) -> Result<Vec<Entry>> {
 fn story_container(name: Option<&str>) -> Option<Option<&'static str>> {
     match name? {
         "MainDocumentPart" | "HeaderPart" | "FooterPart" => Some(None),
-        "FootnotesPart" => Some(Some("footnote")), "EndnotesPart" => Some(Some("endnote")),
-        "WordprocessingCommentsPart" => Some(Some("comment")), _ => None,
+        "FootnotesPart" => Some(Some("footnote")),
+        "EndnotesPart" => Some(Some("endnote")),
+        "WordprocessingCommentsPart" => Some(Some("comment")),
+        _ => None,
     }
 }
 
 pub fn story_nodes(package: &mut PackageData) -> Result<Vec<(String, usize)>> {
     let mut stories = Vec::new();
     for entry in related_parts(package)? {
-        if entry.errors.iter().any(|e| e["relationship_id"].is_null()) {
-            return Err(Error::Invalid(format!("Cannot read relationships from {}", entry.uri)));
-        }
+        if entry.errors.iter().any(|e| e["relationship_id"].is_null()) { return Err(Error::Invalid(format!("Cannot read relationships from {}", entry.uri))); }
         if let Some(rel) = entry.relationships.iter().find(|r| story_container(r.name).is_some() && r.uri.is_none()) {
             return Err(Error::Invalid(format!("Cannot read story target {} from {}", rel.relationship.target, entry.uri)));
         }
@@ -161,9 +171,7 @@ fn package_issue(entry: &Entry, target: &str, rule: &str, expected: impl Into<Va
 
 fn dependency<'a>(entries: &'a [Entry], mut uri: &'a str, path: &str) -> Option<&'a str> {
     if path == "." { return Some(uri); }
-    if path == ".." {
-        return entries.iter().find(|e| e.uri != "/" && e.relationships.iter().any(|r| r.uri.as_deref() == Some(uri))).map(|e| e.uri.as_str());
-    }
+    if path == ".." { return entries.iter().find(|e| e.uri != "/" && e.relationships.iter().any(|r| r.uri.as_deref() == Some(uri))).map(|e| e.uri.as_str()); }
     if path.starts_with('/') { uri = "/"; }
     for name in path.trim_matches('/').split('/') {
         uri = entries.iter().find(|e| e.uri == uri)?.relationships.iter().find(|r| r.name == Some(name))?.uri.as_deref()?;
@@ -183,15 +191,21 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for error in &entry.errors {
             incomplete.push(error.clone());
-            issues.push(package_issue(entry, target, if error["target"].is_null() { "relationship-xml" } else { "relationship-target" }, "readable internal relationships", error.clone()));
+            issues.push(package_issue(
+                entry,
+                target,
+                if error["target"].is_null() { "relationship-xml" } else { "relationship-target" },
+                "readable internal relationships",
+                error.clone(),
+            ));
         }
         for rel in &entry.relationships {
             let Some(uri) = &rel.uri else { continue; };
             let kind = rel.relationship.kind.as_str();
             let Some(&(rule, info)) = rules.get(kind) else {
-                if entry.name.is_some() && schema()["parts"].as_object().unwrap().values().any(|i| s(&i["RelationshipType"]) == kind && available(s(&i["Version"]), target)) {
-                    issues.push(package_issue(entry, target, "part-not-allowed", format!("a permitted {} relationship", entry.name.unwrap()), rel.value()));
-                }
+                if entry.name.is_some()
+                    && schema()["parts"].as_object().unwrap().values().any(|i| s(&i["RelationshipType"]) == kind && available(s(&i["Version"]), target))
+                { issues.push(package_issue(entry, target, "part-not-allowed", format!("a permitted {} relationship", entry.name.unwrap()), rel.value())); }
                 continue;
             };
             if !available(s(&info["Version"]), target) { continue; }
@@ -205,8 +219,12 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
         for (kind, (rule, info)) in rules {
             if !available(s(&info["Version"]), target) { continue; }
             let count = counts.get(kind).copied().unwrap_or(0);
-            if count > 1 && rule["MaxOccursGreatThanOne"] != true { issues.push(package_issue(entry, target, "part-cardinality", format!("at most one {kind}"), count)); }
-            if count == 0 && rule["MinOccursIsNonZero"] == true { issues.push(package_issue(entry, target, "part-required", format!("at least one {kind}"), count)); }
+            if count > 1 && rule["MaxOccursGreatThanOne"] != true {
+                issues.push(package_issue(entry, target, "part-cardinality", format!("at most one {kind}"), count));
+            }
+            if count == 0 && rule["MinOccursIsNonZero"] == true {
+                issues.push(package_issue(entry, target, "part-required", format!("at least one {kind}"), count));
+            }
         }
     }
     let mut trees = HashMap::new();
@@ -227,11 +245,15 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
                 let doc = xml.read()?;
                 let actual = &doc.node(doc.root)?.element().unwrap().name;
                 match part_root(entry.name.unwrap()) {
-                    Ok(_) if actual.uri.starts_with("http://purl.oclc.org/ooxml/") => { gaps.insert(format!("strict-part-root:{}", entry.uri)); }
+                    Ok(_) if actual.uri.starts_with("http://purl.oclc.org/ooxml/") => {
+                        gaps.insert(format!("strict-part-root:{}", entry.uri));
+                    }
                     Ok(expected) if (actual.uri.as_str(), actual.local.as_str()) != expected => {
                         issues.push(package_issue(entry, target, "part-root", json!([expected.0, expected.1]), json!([actual.uri, actual.local])));
                     }
-                    Err(_) => { gaps.insert(format!("unknown-part-root:{}", entry.uri)); }
+                    Err(_) => {
+                        gaps.insert(format!("unknown-part-root:{}", entry.uri));
+                    }
                     _ => (),
                 }
                 drop(doc);
@@ -253,7 +275,8 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
     let (mut checked, mut semantic_checks, mut xsd_checked, mut skipped) = (0_u64, 0_u64, 0_u64, Vec::new());
     for entry in &entries {
         let Some(xml) = trees.get(entry.uri.as_str()) else { continue; };
-        let dependencies = part_index().paths.iter().filter_map(|&path| Some((path.to_string(), trees.get(dependency(&entries, &entry.uri, path)?)?.clone()))).collect();
+        let dependencies =
+            part_index().paths.iter().filter_map(|&path| Some((path.to_string(), trees.get(dependency(&entries, &entry.uri, path)?)?.clone()))).collect();
         let relationships = entry.relationships.iter().map(|r| (r.relationship.id.clone(), r.relationship.kind.clone())).collect();
         let mut report = analyze_tree(xml, target, &dependencies, Some(&relationships), incomplete.is_empty() && invalid_parts.is_empty())?;
         for mut issue in report["issues"].as_array_mut().unwrap().drain(..) {
@@ -264,7 +287,10 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
         checked += report["coverage"]["schema_nodes_checked"].as_u64().unwrap();
         semantic_checks += report["coverage"]["semantic_checks"].as_u64().unwrap();
         xsd_checked += report["coverage"]["xsd_roots_checked"].as_u64().unwrap();
-        for mut region in report["coverage"]["skipped_regions"].as_array_mut().unwrap().drain(..) { region["part_uri"] = entry.uri.clone().into(); skipped.push(region); }
+        for mut region in report["coverage"]["skipped_regions"].as_array_mut().unwrap().drain(..) {
+            region["part_uri"] = entry.uri.clone().into();
+            skipped.push(region);
+        }
         gaps.extend(arr(&report["coverage"]["gaps"]).iter().map(|g| s(g).to_string()));
     }
     Ok(json!({"issues":issues,"target":target,"source":schema()["source"],"scope":{"part_uris":scope},
@@ -296,10 +322,16 @@ fn create_declared(package: &mut PackageData, main: &str, info: &Value, expected
     let names: HashSet<_> = package.part_names().into_iter().map(|n| n.to_lowercase()).collect();
     let mut uri = format!("{base}.xml");
     let mut number = 0;
-    while names.contains(&uri.to_lowercase()) { number += 1; uri = format!("{base}{number}.xml"); }
+    while names.contains(&uri.to_lowercase()) {
+        number += 1;
+        uri = format!("{base}{number}.xml");
+    }
     let prefix = prefix_of(expected.0);
-    let root = Element { name: Name { uri: expected.0.into(), local: expected.1.into(), prefix: prefix.into() },
-        attributes: Vec::new(), namespaces: vec![(prefix.into(), expected.0.into())] };
+    let root = Element {
+        name: Name { uri: expected.0.into(), local: expected.1.into(), prefix: prefix.into() },
+        attributes: Vec::new(),
+        namespaces: vec![(prefix.into(), expected.0.into())],
+    };
     package.add_part(&uri, s(&info["ContentType"]), &Document::from_element(root).serialize()?)?;
     package.add_relationship(main, s(&info["RelationshipType"]), &uri, "Internal", None)?;
     Ok(uri)

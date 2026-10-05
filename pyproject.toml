@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["fastship>=0.0.11", "maturin>=1.0,<2.0", "pytest"]
+dev = ["fastws-cli>=0.0.20", "fastship>=0.0.11", "maturin>=1.0,<2.0", "pytest"]
 
 [project.urls]
 Homepage = "https://github.com/AnswerDotAI/oxml"
@@ -25,13 +25,12 @@ Repository = "https://github.com/AnswerDotAI/oxml"
 Issues = "https://github.com/AnswerDotAI/oxml/issues"
 
 [tool.maturin]
-features = ["extension-module"]
 python-source = "python"
 module-name = "oxml._core"
 include = [{ path = "schema/xsd/SOURCES.md", format = ["sdist", "wheel"] }]
 
 [tool.uv]
-cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.rs" }, { file = "build.rs" }, { file = "schema/**/*" }, { file = "Cargo.toml" }, { file = ".git/fastws-cargo-key" }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "schema/xsd/SOURCES.md" }]
 
 [tool.fastship]
 branch = "main"

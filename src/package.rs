@@ -1,5 +1,5 @@
-use crate::xml::{self, check_local, xml_char, Attribute, Document, Element, Name, NodeKind};
 use crate::error::{Error, Result};
+use crate::xml::{self, check_local, xml_char, Attribute, Document, Element, Name, NodeKind};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::{BTreeMap, HashSet};
@@ -251,7 +251,17 @@ impl PackageData {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
             if entry.is_dir() { names.remove(&format!("/{}", entry.name().trim_end_matches('/')).to_ascii_lowercase()); }
         }
-        let mut package = Self { original, archive, names, changes: BTreeMap::new(), main: String::new(), signed: false, loaded: BTreeMap::new(), generations: BTreeMap::new(), next_drawing_id: 0 };
+        let mut package = Self {
+            original,
+            archive,
+            names,
+            changes: BTreeMap::new(),
+            main: String::new(),
+            signed: false,
+            loaded: BTreeMap::new(),
+            generations: BTreeMap::new(),
+            next_drawing_id: 0,
+        };
         let types = package.types()?;
         package.signed = types.records().map(|(_, r)| r).any(|r| r.attribute("", "ContentType").is_some_and(|s| s.contains("digital-signature")));
         for uri in package.names.values() {
@@ -296,7 +306,10 @@ impl PackageData {
         for index in 0..archive.len() {
             let mut entry = match archive.by_index(index) {
                 Ok(entry) => entry,
-                Err(e) => { errors.push((format!("ZIP entry {index}"), e.to_string())); continue; }
+                Err(e) => {
+                    errors.push((format!("ZIP entry {index}"), e.to_string()));
+                    continue;
+                }
             };
             let uri = format!("/{}", entry.name());
             if self.changes.contains_key(&uri) || self.loaded.contains_key(&uri) { continue; }
@@ -379,9 +392,7 @@ impl PackageData {
 
     pub fn load_xml(&mut self, uri: &str) -> Result<xml::Xml> {
         let name = self.existing(uri)?;
-        if name == TYPES || rels_source(&name).is_some() {
-            return Err(invalid("Use scoped content-type and relationship APIs for package metadata"));
-        }
+        if name == TYPES || rels_source(&name).is_some() { return Err(invalid("Use scoped content-type and relationship APIs for package metadata")); }
         if let Some((xml, _)) = self.loaded.get(&name) { return Ok(xml.clone()); }
         let xml = xml::Xml::new(&self.data(&name)?)?;
         xml.set_read_only(self.signed);
@@ -485,7 +496,6 @@ impl PackageData {
     pub fn resolve_part(&self, uri: &str) -> Result<String> { self.existing(uri) }
 
     pub fn part_names(&self) -> Vec<String> { self.names.values().filter(|n| self.changes.get(*n) != Some(&None)).cloned().collect() }
-
 
     pub fn content_type(&self, uri: &str) -> Result<String> {
         let name = self.existing(uri)?;
@@ -593,7 +603,11 @@ impl PackageData {
     pub fn relationship_id(&self, source_uri: &str, target_uri: &str) -> Result<String> {
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         let target = self.existing(target_uri)?;
-        let rel = self.rels(&source)?.1.into_iter().find(|r| r.mode == "Internal" && resolve_target(&source, &r.target).is_ok_and(|p| p.eq_ignore_ascii_case(&target)));
+        let rel = self
+            .rels(&source)?
+            .1
+            .into_iter()
+            .find(|r| r.mode == "Internal" && resolve_target(&source, &r.target).is_ok_and(|p| p.eq_ignore_ascii_case(&target)));
         rel.map(|r| r.id).ok_or_else(|| Error::Missing("No relationship to that part in this scope".into()))
     }
 
@@ -664,15 +678,20 @@ impl PackageData {
                     let doc = xml.read()?;
                     doc.node(doc.root)?.element().unwrap().attribute(ds, "itemID").is_some_and(|v| v.to_uppercase() == item_id)
                 };
-                if matches { self.replace_part(&item, data)?; return Ok(item); }
+                if matches {
+                    self.replace_part(&item, data)?;
+                    return Ok(item);
+                }
             }
         }
-        let n = (1..).find(|n| self.existing(&format!("/customXml/item{n}.xml")).is_err()
-            && self.existing(&format!("/customXml/itemProps{n}.xml")).is_err()).unwrap();
+        let n = (1..)
+            .find(|n| self.existing(&format!("/customXml/item{n}.xml")).is_err() && self.existing(&format!("/customXml/itemProps{n}.xml")).is_err())
+            .unwrap();
         let (item, props) = (format!("/customXml/item{n}.xml"), format!("/customXml/itemProps{n}.xml"));
         let element = |local: &str| Element {
             name: Name { uri: ds.into(), local: local.into(), prefix: "ds".into() },
-            attributes: Vec::new(), namespaces: vec![("ds".into(), ds.into())],
+            attributes: Vec::new(),
+            namespaces: vec![("ds".into(), ds.into())],
         };
         let mut properties = Document::from_element(element("datastoreItem"));
         properties.set_attribute(properties.root, ds, "itemID", &item_id, Some("ds"))?;
@@ -706,9 +725,7 @@ impl PackageData {
 #[pyclass(module = "oxml._core", from_py_object)]
 pub struct Package { state: Arc<Mutex<PackageData>> }
 impl Package {
-    pub fn lock(&self) -> Result<MutexGuard<'_, PackageData>> {
-        self.state.lock().map_err(|_| invalid("Package state lock was poisoned"))
-    }
+    pub fn lock(&self) -> Result<MutexGuard<'_, PackageData>> { self.state.lock().map_err(|_| invalid("Package state lock was poisoned")) }
     pub fn from_bytes(data: &[u8]) -> Result<Self> { Ok(Self { state: Arc::new(Mutex::new(PackageData::open(data)?)) }) }
     pub fn to_bytes(&self) -> Result<Vec<u8>> { self.lock()?.output() }
 }
@@ -732,22 +749,18 @@ impl Package {
     pub fn xml(&self, uri: &str) -> Result<xml::Xml> { self.lock()?.load_xml(uri) }
     pub fn owner(&self, xml: &xml::Xml) -> Result<String> {
         xml.read()?;
-        self.lock()?.loaded.iter().find(|(_, (tree, _))| tree.same_state(xml)).map(|(uri, _)| uri.clone())
+        self.lock()?
+            .loaded
+            .iter()
+            .find(|(_, (tree, _))| tree.same_state(xml))
+            .map(|(uri, _)| uri.clone())
             .ok_or_else(|| invalid("Element does not belong to this package"))
     }
-    fn read_part<'py>(&self, py: Python<'py>, uri: &str) -> PyResult<Bound<'py, PyBytes>> {
-        Ok(PyBytes::new(py, &self.lock()?.data(uri)?))
-    }
+    fn read_part<'py>(&self, py: Python<'py>, uri: &str) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &self.lock()?.data(uri)?)) }
     pub fn content_type(&self, uri: &str) -> Result<String> { self.lock()?.content_type(uri) }
     pub fn set_content_type(&self, uri: &str, content_type: &str) -> Result<()> { self.lock()?.set_content_type(uri, content_type) }
-    pub fn add_part(&self, uri: &str, content_type: &str, data: &[u8]) -> Result<Part> {
-        self.lock()?.add_part(uri, content_type, data)?;
-        self.part(uri)
-    }
-    pub fn replace_part(&self, uri: &str, data: &[u8]) -> Result<Part> {
-        self.lock()?.replace_part(uri, data)?;
-        self.part(uri)
-    }
+    pub fn add_part(&self, uri: &str, content_type: &str, data: &[u8]) -> Result<Part> { self.lock()?.add_part(uri, content_type, data)?; self.part(uri) }
+    pub fn replace_part(&self, uri: &str, data: &[u8]) -> Result<Part> { self.lock()?.replace_part(uri, data)?; self.part(uri) }
     pub fn remove_part(&self, uri: &str) -> Result<()> { self.lock()?.remove_part(uri) }
     fn relationships<'py>(&self, py: Python<'py>, source_uri: &str) -> PyResult<Bound<'py, PyList>> {
         let result = PyList::empty(py);
@@ -766,9 +779,14 @@ impl Package {
     }
     pub fn relationship_target(&self, source_uri: &str, target: &str) -> Result<String> { self.lock()?.relationship_target(source_uri, target) }
     #[pyo3(signature = (source_uri, relationship_type, target, target_mode="Internal", relationship_id=None))]
-    pub fn add_relationship(&self, source_uri: &str, relationship_type: &str, target: &str, target_mode: &str, relationship_id: Option<&str>) -> Result<String> {
-        self.lock()?.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id)
-    }
+    pub fn add_relationship(
+        &self,
+        source_uri: &str,
+        relationship_type: &str,
+        target: &str,
+        target_mode: &str,
+        relationship_id: Option<&str>,
+    ) -> Result<String> { self.lock()?.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id) }
     pub fn remove_relationship(&self, source_uri: &str, relationship_id: &str) -> Result<()> { self.lock()?.remove_relationship(source_uri, relationship_id) }
     pub fn relationship_id(&self, source_uri: &str, target_uri: &str) -> Result<String> { self.lock()?.relationship_id(source_uri, target_uri) }
     #[pyo3(signature = (item_id, data, schema_uri=None))]
@@ -802,10 +820,7 @@ impl Part {
     #[getter]
     pub fn xml(&self) -> Result<xml::Xml> { self.check()?.load_xml(&self.uri) }
     fn read_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &self.check()?.data(&self.uri)?)) }
-    pub fn replace(&self, data: &[u8]) -> Result<Part> {
-        self.check()?.replace_part(&self.uri, data)?;
-        self.package.part(&self.uri)
-    }
+    pub fn replace(&self, data: &[u8]) -> Result<Part> { self.check()?.replace_part(&self.uri, data)?; self.package.part(&self.uri) }
     #[pyo3(signature = (data, content_type=None, width=None, height=None, description=""))]
     pub fn add_image(&self, data: &[u8], content_type: Option<&str>, width: Option<i64>, height: Option<i64>, description: &str) -> Result<xml::Xml> {
         crate::images::add(&mut *self.check()?, &self.uri, data, content_type, width, height, description)

@@ -1,9 +1,17 @@
 //! Conservative body comparison using the same native revision operations as explicit edits.
-use crate::{error::{Error, Result}, package::Package, revisions::{self, Metadata}, text::{self, View, W, W14, XML},
-    xml::{Attribute, Document, NodeKind}};
+use crate::{
+    error::{Error, Result},
+    package::Package,
+    revisions::{self, Metadata},
+    text::{self, View, W, W14, XML},
+    xml::{Attribute, Document, NodeKind},
+};
 use pyo3::prelude::*;
 use similar::{capture_diff_slices, Algorithm, DiffOp, DiffTag, TextDiff};
-use std::{collections::{BTreeMap, HashMap}, ops::Range};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::Range,
+};
 const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 fn unsupported(message: &str) -> Error { Error::Unsupported(message.into()) }
@@ -11,28 +19,44 @@ type Attributes = Vec<(String, String, String)>;
 #[derive(PartialEq, Eq, Hash)]
 enum Key {
     Element((String, String), Attributes, Vec<(String, String)>, Vec<Key>),
-    Text(String), Comment(String), Pi(String, String),
+    Text(String),
+    Comment(String),
+    Pi(String, String),
 }
 fn attrs(doc: &Document, id: usize, bookkeeping: bool, links: Option<&HashMap<String, String>>) -> Result<Attributes> {
     let e = doc.node(id)?.element().ok_or_else(|| Error::Invalid("Expected an XML element".into()))?;
     // A hyperlink's relationship id stands for its target, so links compare by where they point.
-    let target = |a: &Attribute| links.filter(|_| e.name.uri == W && e.name.local == "hyperlink" && a.name.uri == R && a.name.local == "id").and_then(|l| l.get(&a.value));
-    let mut result = e.attributes.iter().filter(|a| !bookkeeping || !(a.name.uri == W && a.name.local.starts_with("rsid") ||
-        a.name.uri == W14 && matches!(a.name.local.as_str(), "paraId" | "textId")))
-        .map(|a| (a.name.uri.clone(), a.name.local.clone(), target(a).unwrap_or(&a.value).clone())).collect::<Vec<_>>();
+    let target = |a: &Attribute| {
+        links.filter(|_| e.name.uri == W && e.name.local == "hyperlink" && a.name.uri == R && a.name.local == "id").and_then(|l| l.get(&a.value))
+    };
+    let mut result = e
+        .attributes
+        .iter()
+        .filter(|a| {
+            !bookkeeping || !(a.name.uri == W && a.name.local.starts_with("rsid") || a.name.uri == W14 && matches!(a.name.local.as_str(), "paraId" | "textId"))
+        })
+        .map(|a| (a.name.uri.clone(), a.name.local.clone(), target(a).unwrap_or(&a.value).clone()))
+        .collect::<Vec<_>>();
     result.sort();
     Ok(result)
 }
 fn key(doc: &Document, id: usize, omit: &[&str], bookkeeping: bool, inherited: Option<bool>, links: Option<&HashMap<String, String>>) -> Result<Key> {
     let node = doc.node(id)?;
-    let Some(e) = node.element() else { return Ok(match &node.kind {
-        NodeKind::Text(s) => Key::Text(s.clone()), NodeKind::Comment(s) => Key::Comment(s.clone()),
-        NodeKind::Pi { target, value } => Key::Pi(target.clone(), value.clone()), _ => unreachable!(),
-    }); };
+    let Some(e) = node.element() else {
+        return Ok(match &node.kind {
+            NodeKind::Text(s) => Key::Text(s.clone()),
+            NodeKind::Comment(s) => Key::Comment(s.clone()),
+            NodeKind::Pi { target, value } => Key::Pi(target.clone(), value.clone()),
+            _ => unreachable!(),
+        });
+    };
     let mut preserve = inherited;
     let mut ancestor = Some(id);
     while let Some(id) = ancestor {
-        if let Some(space) = doc.node(id)?.element().and_then(|e| e.attribute(XML, "space")) { preserve = Some(space == "preserve"); break; }
+        if let Some(space) = doc.node(id)?.element().and_then(|e| e.attribute(XML, "space")) {
+            preserve = Some(space == "preserve");
+            break;
+        }
         if preserve.is_some() { break; }
         ancestor = doc.node(id)?.parent;
     }
@@ -42,7 +66,8 @@ fn key(doc: &Document, id: usize, omit: &[&str], bookkeeping: bool, inherited: O
         let child = doc.node(id)?;
         if child.element().is_some() {
             if text::name(doc, id).is_some_and(|name| omit.contains(&name)) { continue; }
-        } else if matches!(&child.kind, NodeKind::Text(s) if s.trim().is_empty()) && has_elements && preserve != Some(true) && e.name.uri == W { continue; }
+        }
+        else if matches!(&child.kind, NodeKind::Text(s) if s.trim().is_empty()) && has_elements && preserve != Some(true) && e.name.uri == W { continue; }
         children.push(key(doc, id, &[], bookkeeping, Some(preserve.unwrap_or(false)), links)?);
     }
     let mut ns = e.namespaces.iter().filter(|(_, uri)| !uri.is_empty()).cloned().collect::<Vec<_>>();
@@ -69,8 +94,10 @@ fn dependencies(package: &Package) -> Result<Dependencies> {
     for uri in names {
         if uri != "/" {
             let content_type = package.content_type(&uri)?;
-            if matches!(content_type.as_str(), "application/vnd.openxmlformats-package.core-properties+xml" |
-                "application/vnd.openxmlformats-officedocument.extended-properties+xml") { continue; }
+            if matches!(
+                content_type.as_str(),
+                "application/vnd.openxmlformats-package.core-properties+xml" | "application/vnd.openxmlformats-officedocument.extended-properties+xml"
+            ) { continue; }
             if uri != package.main_part() {
                 let payload = if content_type.ends_with("xml") {
                     let tree = package.load_xml(&uri)?;
@@ -83,8 +110,13 @@ fn dependencies(package: &Package) -> Result<Dependencies> {
         let mut relationships = Vec::new();
         for rel in package.relationships(&uri)? {
             if rel.kind.ends_with("/hyperlink") { continue; }
-            if uri == "/" && matches!(rel.kind.as_str(), "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" |
-                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties") { continue; }
+            if uri == "/"
+                && matches!(
+                    rel.kind.as_str(),
+                    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties"
+                        | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties"
+                )
+            { continue; }
             let target = if rel.mode == "External" { Some(rel.target) } else { Some(package.relationship_target(&uri, &rel.target)?) };
             relationships.push((if uri == "/" { String::new() } else { rel.id }, rel.kind, target, rel.mode));
         }
@@ -98,13 +130,16 @@ struct Opcode { equal: bool, old: Range<usize>, new: Range<usize> }
 fn opcodes(before: &str, after: &str) -> Vec<Opcode> {
     let diff = TextDiff::configure().algorithm(Algorithm::Myers).diff_unicode_words(before, after);
     let (mut a, mut c) = (0, 0);
-    diff.ops().iter().map(|op| {
-        let b = a + op.old_range().map(|i| diff.old_slice(i).unwrap().chars().count()).sum::<usize>();
-        let d = c + op.new_range().map(|i| diff.new_slice(i).unwrap().chars().count()).sum::<usize>();
-        let result = Opcode { equal: op.tag() == DiffTag::Equal, old: a..b, new: c..d };
-        (a, c) = (b, d);
-        result
-    }).collect()
+    diff.ops()
+        .iter()
+        .map(|op| {
+            let b = a + op.old_range().map(|i| diff.old_slice(i).unwrap().chars().count()).sum::<usize>();
+            let d = c + op.new_range().map(|i| diff.new_slice(i).unwrap().chars().count()).sum::<usize>();
+            let result = Opcode { equal: op.tag() == DiffTag::Equal, old: a..b, new: c..d };
+            (a, c) = (b, d);
+            result
+        })
+        .collect()
 }
 fn properties_document(doc: &Document, parent: usize, name: &str, omit: &[&str]) -> Result<Document> {
     let Some(id) = text::child(doc, parent, name) else { return Ok(Document::from_element(text::word_element(name))); };
@@ -197,11 +232,15 @@ fn cut(source: &mut Document, start: usize, end: usize, whole: bool) -> Result<V
     let nodes = &children[index..stop];
     let ids = |kind| nodes.iter().filter(|&&id| text::name(source, id) == Some(kind)).map(|&id| attribute(source, id, "id")).collect::<Vec<_>>();
     let (starts, ends) = (ids("bookmarkStart"), ids("bookmarkEnd"));
-    nodes.iter().filter(|&&id| match text::name(source, id) {
-        Some("bookmarkStart") => ends.contains(&attribute(source, id, "id")),
-        Some("bookmarkEnd") => starts.contains(&attribute(source, id, "id")),
-        _ => true,
-    }).map(|&id| source.subtree(id)).collect()
+    nodes
+        .iter()
+        .filter(|&&id| match text::name(source, id) {
+            Some("bookmarkStart") => ends.contains(&attribute(source, id, "id")),
+            Some("bookmarkEnd") => starts.contains(&attribute(source, id, "id")),
+            _ => true,
+        })
+        .map(|&id| source.subtree(id))
+        .collect()
 }
 fn region_diff(doc: &mut Document, scope: usize, region: &Region, cx: &Cx, metadata: &mut Metadata) -> Result<()> {
     for &id in &region.old { expand_links(doc, id, &cx.links[0])?; }
@@ -290,8 +329,11 @@ fn field_instructions(doc: &mut Document, scope: usize, group: &[(usize, usize)]
 }
 /// Retained runs whose properties differ from the revised run at the same offsets, as `(paragraph, start, end, properties)`.
 fn run_formatting(doc: &Document, group: &[(usize, usize)], revised: &Document) -> Result<Vec<(usize, usize, usize, Document)>> {
-    let new_runs = text::paragraph(revised, revised.root, View::Current, false)?.spans.into_iter()
-        .filter_map(|s| s.element.filter(|&id| text::name(revised, id) == Some("r") && s.start < s.end).map(|id| (s.start, s.end, id))).collect::<Vec<_>>();
+    let new_runs = text::paragraph(revised, revised.root, View::Current, false)?
+        .spans
+        .into_iter()
+        .filter_map(|s| s.element.filter(|&id| text::name(revised, id) == Some("r") && s.start < s.end).map(|id| (s.start, s.end, id)))
+        .collect::<Vec<_>>();
     let mut result = Vec::new();
     for &(position, paragraph) in group {
         let offset = position - group[0].0;
@@ -300,8 +342,12 @@ fn run_formatting(doc: &Document, group: &[(usize, usize)], revised: &Document) 
             for &(start, end, new) in &new_runs {
                 let (low, high) = ((span.start + offset).max(start), (span.end + offset).min(end));
                 if low >= high { continue; }
-                if attrs(doc, run, true, None)? != attrs(revised, new, true, None)? { return Err(unsupported("Changed attributes on retained runs are unsupported")); }
-                if props(doc, run, "rPr", &[])? != props(revised, new, "rPr", &[])? { result.push((paragraph, low - offset, high - offset, properties_document(revised, new, "rPr", &[])?)); }
+                if attrs(doc, run, true, None)? != attrs(revised, new, true, None)? {
+                    return Err(unsupported("Changed attributes on retained runs are unsupported"));
+                }
+                if props(doc, run, "rPr", &[])? != props(revised, new, "rPr", &[])? {
+                    result.push((paragraph, low - offset, high - offset, properties_document(revised, new, "rPr", &[])?));
+                }
             }
         }
     }
@@ -309,7 +355,15 @@ fn run_formatting(doc: &Document, group: &[(usize, usize)], revised: &Document) 
 }
 /// Compare paragraph and run properties, and field instructions, between the result's current-view paragraphs and the
 /// revised paragraphs they now equal in text.
-fn pair_properties(doc: &mut Document, scope: usize, region: &Region, scratches: &mut [Document], len: usize, trailing: bool, metadata: &mut Metadata) -> Result<()> {
+fn pair_properties(
+    doc: &mut Document,
+    scope: usize,
+    region: &Region,
+    scratches: &mut [Document],
+    len: usize,
+    trailing: bool,
+    metadata: &mut Metadata,
+) -> Result<()> {
     if region.new.is_empty() { return Ok(()); }
     let groups = groups(doc, scope, region.position, region.position + len, trailing)?;
     if groups.len() != region.new.len() { return Err(Error::Invalid("Comparison produced an unexpected paragraph count".into())); }
@@ -329,13 +383,21 @@ fn settle_bookmarks(doc: &mut Document, scope: usize, metadata: &mut Metadata) -
     let markers = doc.descendants(scope)?.filter(|&id| matches!(text::name(doc, id), Some("bookmarkStart" | "bookmarkEnd"))).collect::<Vec<_>>();
     let inserted = |id: usize| std::iter::successors(Some(id), |&id| doc.node(id).ok()?.parent).any(|id| text::name(doc, id) == Some("ins"));
     let (inside, outside): (Vec<_>, Vec<_>) = markers.into_iter().partition(|&id| inserted(id));
-    let pairs = inside.iter().copied().filter(|&id| text::name(doc, id) == Some("bookmarkStart"))
-        .map(|start| (start, inside.iter().copied().filter(|&id| attribute(doc, id, "id") == attribute(doc, start, "id")).collect::<Vec<_>>())).collect::<Vec<_>>();
+    let pairs = inside
+        .iter()
+        .copied()
+        .filter(|&id| text::name(doc, id) == Some("bookmarkStart"))
+        .map(|start| (start, inside.iter().copied().filter(|&id| attribute(doc, id, "id") == attribute(doc, start, "id")).collect::<Vec<_>>()))
+        .collect::<Vec<_>>();
     for (start, pair) in pairs {
         let (name, fresh) = (attribute(doc, start, "name"), metadata.fresh().to_string());
         for id in pair { doc.set_attribute(id, W, "id", &fresh, None)?; }
-        let stale = outside.iter().copied().filter(|&id| text::name(doc, id) == Some("bookmarkStart") && attribute(doc, id, "name") == name)
-            .map(|id| attribute(doc, id, "id")).collect::<Vec<_>>();
+        let stale = outside
+            .iter()
+            .copied()
+            .filter(|&id| text::name(doc, id) == Some("bookmarkStart") && attribute(doc, id, "name") == name)
+            .map(|id| attribute(doc, id, "id"))
+            .collect::<Vec<_>>();
         for &id in &outside { if stale.contains(&attribute(doc, id, "id")) { doc.remove(id)?; } }
     }
     Ok(())
@@ -344,9 +406,16 @@ fn settle_bookmarks(doc: &mut Document, scope: usize, metadata: &mut Metadata) -
 /// Queue a paragraph region; an insertion with no old paragraph goes before `following`, which must be a paragraph.
 fn queue(doc: &Document, rows: &[text::Row], olds: &[usize], news: &[usize], following: Option<usize>, regions: &mut Vec<Region>) -> Result<()> {
     if olds.is_empty() && news.is_empty() { return Ok(()); }
-    let anchor = olds.first().copied().or(following).filter(|&id| text::name(doc, id) == Some("p"))
+    let anchor = olds
+        .first()
+        .copied()
+        .or(following)
+        .filter(|&id| text::name(doc, id) == Some("p"))
         .ok_or_else(|| unsupported("Paragraph changes beside tables need a neighbouring paragraph"))?;
-    let position = rows.iter().find(|row| row.paragraph == Some(anchor)).map(|row| row.position)
+    let position = rows
+        .iter()
+        .find(|row| row.paragraph == Some(anchor))
+        .map(|row| row.position)
         .ok_or_else(|| Error::Invalid("Paragraph is outside the comparison story".into()))?;
     regions.push(Region { old: olds.to_vec(), new: news.to_vec(), position });
     Ok(())
@@ -373,7 +442,9 @@ fn plan_table(doc: &Document, rows: &[text::Row], old: usize, cx: &Cx, new: usiz
         let (new_keys, new_cells) = table_parts(cx.revised, right, "tc", &["trPr"])?;
         if old_keys != new_keys || old_cells.len() != new_cells.len() { return Err(unsupported("Changed table row structure is unsupported")); }
         for (&left, &right) in old_cells.iter().zip(&new_cells) {
-            if props(doc, left, "tcPr", &[])? != props(cx.revised, right, "tcPr", &[])? { return Err(unsupported("Changed table cell properties are unsupported")); }
+            if props(doc, left, "tcPr", &[])? != props(cx.revised, right, "tcPr", &[])? {
+                return Err(unsupported("Changed table cell properties are unsupported"));
+            }
             plan(doc, rows, left, cx, right, regions)?;
         }
     }
@@ -382,7 +453,9 @@ fn plan_table(doc: &Document, rows: &[text::Row], old: usize, cx: &Cx, new: usiz
 /// Align the block children of paired containers and queue the paragraph regions to diff, descending into paired tables.
 fn plan(doc: &Document, rows: &[text::Row], old_parent: usize, cx: &Cx, new_parent: usize, regions: &mut Vec<Region>) -> Result<()> {
     let revised = cx.revised;
-    let blocks = |source: &Document, parent: usize| source.element_children(parent).map(|ids| ids.filter(|&id| text::name(source, id) != Some("tcPr")).collect::<Vec<_>>());
+    let blocks = |source: &Document, parent: usize| {
+        source.element_children(parent).map(|ids| ids.filter(|&id| text::name(source, id) != Some("tcPr")).collect::<Vec<_>>())
+    };
     let (old, new) = (blocks(doc, old_parent)?, blocks(revised, new_parent)?);
     let old_keys = old.iter().map(|&id| block(doc, id, &cx.links[0])).collect::<Result<Vec<_>>>()?;
     let new_keys = new.iter().map(|&id| block(revised, id, &cx.links[1])).collect::<Result<Vec<_>>>()?;
@@ -392,8 +465,9 @@ fn plan(doc: &Document, rows: &[text::Row], old_parent: usize, cx: &Cx, new_pare
             DiffOp::Equal { old_index, new_index, len } => segments.extend((0..len).map(|i| (true, vec![old[old_index + i]], vec![new[new_index + i]]))),
             DiffOp::Delete { old_index, old_len, .. } => segments.push((false, old[old_index..old_index + old_len].to_vec(), Vec::new())),
             DiffOp::Insert { new_index, new_len, .. } => segments.push((false, Vec::new(), new[new_index..new_index + new_len].to_vec())),
-            DiffOp::Replace { old_index, old_len, new_index, new_len } =>
-                segments.push((false, old[old_index..old_index + old_len].to_vec(), new[new_index..new_index + new_len].to_vec())),
+            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                segments.push((false, old[old_index..old_index + old_len].to_vec(), new[new_index..new_index + new_len].to_vec()))
+            }
         }
     }
     // A change absorbs the equal paragraph before it when that paragraph's trailing separator changed: the mark before
@@ -401,7 +475,9 @@ fn plan(doc: &Document, rows: &[text::Row], old_parent: usize, cx: &Cx, new_pare
     let mut merged: Vec<(bool, Vec<usize>, Vec<usize>)> = Vec::new();
     for (equal, olds, news) in segments {
         match merged.last() {
-            Some((true, previous_old, previous_new)) if !equal && text::name(doc, previous_old[0]) == Some("p") && tokens(doc, previous_old)? != tokens(revised, previous_new)? => {
+            Some((true, previous_old, previous_new))
+                if !equal && text::name(doc, previous_old[0]) == Some("p") && tokens(doc, previous_old)? != tokens(revised, previous_new)? =>
+            {
                 let (_, mut old_ids, mut new_ids) = merged.pop().unwrap();
                 old_ids.extend(olds);
                 new_ids.extend(news);
@@ -414,18 +490,18 @@ fn plan(doc: &Document, rows: &[text::Row], old_parent: usize, cx: &Cx, new_pare
     for (i, (equal, olds, news)) in merged.iter().enumerate() {
         let following = merged[i + 1..].iter().find_map(|(_, following, _)| following.first().copied());
         if *equal {
-            if text::name(doc, olds[0]) == Some("p") && key(doc, olds[0], &[], true, None, Some(&cx.links[0]))? != key(revised, news[0], &[], true, None, Some(&cx.links[1]))? {
-                queue(doc, rows, olds, news, following, regions)?;
-            }
+            if text::name(doc, olds[0]) == Some("p")
+                && key(doc, olds[0], &[], true, None, Some(&cx.links[0]))? != key(revised, news[0], &[], true, None, Some(&cx.links[1]))?
+            { queue(doc, rows, olds, news, following, regions)?; }
             continue;
         }
         // A change mixing paragraphs and tables splits at the tables, which pair in order.
         let old_tables = olds.iter().copied().filter(|&id| table(doc, id)).collect::<Vec<_>>();
         let new_tables = news.iter().copied().filter(|&id| table(revised, id)).collect::<Vec<_>>();
-        if old_tables.len() != new_tables.len() || olds.iter().any(|&id| !table(doc, id) && text::name(doc, id) != Some("p")) ||
-            news.iter().any(|&id| !table(revised, id) && text::name(revised, id) != Some("p")) {
-            return Err(unsupported("Changed opaque body content or section properties are unsupported"));
-        }
+        if old_tables.len() != new_tables.len()
+            || olds.iter().any(|&id| !table(doc, id) && text::name(doc, id) != Some("p"))
+            || news.iter().any(|&id| !table(revised, id) && text::name(revised, id) != Some("p"))
+        { return Err(unsupported("Changed opaque body content or section properties are unsupported")); }
         let (mut old_groups, mut new_groups) = (olds.split(|&id| table(doc, id)), news.split(|&id| table(revised, id)));
         for (&left, &right) in old_tables.iter().zip(&new_tables) {
             queue(doc, rows, old_groups.next().unwrap(), new_groups.next().unwrap(), Some(left), regions)?;
@@ -457,10 +533,10 @@ pub fn compare_packages(original: &Package, revised: &Package, author: &str, dat
     let revised = other.read()?;
     tree.edit(|doc| {
         let scope = doc.root;
-        if text::name(doc, doc.root) != Some("document") || text::name(&revised, revised.root) != Some("document") ||
-            attrs(doc, doc.root, true, None)? != attrs(&revised, revised.root, true, None)? {
-            return Err(unsupported("Changed document-root attributes or non-Transitional vocabulary are unsupported"));
-        }
+        if text::name(doc, doc.root) != Some("document")
+            || text::name(&revised, revised.root) != Some("document")
+            || attrs(doc, doc.root, true, None)? != attrs(&revised, revised.root, true, None)?
+        { return Err(unsupported("Changed document-root attributes or non-Transitional vocabulary are unsupported")); }
         let old_body = text::child(doc, doc.root, "body").ok_or_else(|| Error::Invalid("Expected a document body".into()))?;
         let new_body = text::child(&revised, revised.root, "body").ok_or_else(|| Error::Invalid("Expected a document body".into()))?;
         for (source, body) in [(&*doc, old_body), (&*revised, new_body)] {

@@ -1,5 +1,12 @@
-use oxml::{definitions, error::Result, footnotes::Footnotes, package::Package, properties::{Properties, Settings, SettingValue},
-    revisions, text::{self, Story, View}};
+use oxml::{
+    definitions,
+    error::Result,
+    footnotes::Footnotes,
+    package::Package,
+    properties::{Properties, SettingValue, Settings},
+    revisions,
+    text::{self, Story, View},
+};
 
 #[test]
 fn native_edit_review_save_and_invalidate_share_one_document() -> Result<()> {

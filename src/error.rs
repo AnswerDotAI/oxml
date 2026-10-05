@@ -13,10 +13,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid(s) | Self::Unsupported(s) | Self::Missing(s) | Self::Stale(s) | Self::Index(s) => f.write_str(s),
-            Self::Io(e) => e.fmt(f),
-        }
+        match self { Self::Invalid(s) | Self::Unsupported(s) | Self::Missing(s) | Self::Stale(s) | Self::Index(s) => f.write_str(s), Self::Io(e) => e.fmt(f) }
     }
 }
 impl std::error::Error for Error {}

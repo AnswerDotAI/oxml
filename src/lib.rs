@@ -1,21 +1,21 @@
 use pyo3::prelude::*;
+pub mod comments;
+pub mod compare;
+pub mod definitions;
 pub mod error;
+pub mod footnotes;
+pub mod images;
+pub mod importing;
+pub mod links;
 pub mod package;
 pub mod package_schema;
-pub mod schema;
-mod xsd;
-pub mod xml;
-pub mod text;
-pub mod definitions;
-pub mod tables;
-pub mod revisions;
-pub mod compare;
-pub mod comments;
-pub mod footnotes;
-pub mod links;
-pub mod importing;
-pub mod images;
 pub mod properties;
+pub mod revisions;
+pub mod schema;
+pub mod tables;
+pub mod text;
+pub mod xml;
+mod xsd;
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {

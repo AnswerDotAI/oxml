@@ -1,5 +1,10 @@
 //! Inline picture markup, image sniffing and the owning part's image relationship.
-use crate::{error::{Error, Result}, package::PackageData, package_schema::story_nodes, xml::{self, Xml}};
+use crate::{
+    error::{Error, Result},
+    package::PackageData,
+    package_schema::story_nodes,
+    xml::{self, Xml},
+};
 use std::collections::HashSet;
 
 const WP: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
@@ -19,7 +24,13 @@ const DRAWING: &[u8] = br#"<w:drawing xmlns:w="http://schemas.openxmlformats.org
 </pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>"#;
 
 /// Pixel size, resolution and content type read from an image header.
-pub struct Sniffed { pub width: u32, pub height: u32, pub dpi_x: u32, pub dpi_y: u32, pub content_type: &'static str }
+pub struct Sniffed {
+    pub width: u32,
+    pub height: u32,
+    pub dpi_x: u32,
+    pub dpi_y: u32,
+    pub content_type: &'static str,
+}
 
 fn be32(d: &[u8], i: usize) -> Option<u32> { d.get(i..i + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]])) }
 fn be16(d: &[u8], i: usize) -> Option<u32> { d.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as u32) }
@@ -51,7 +62,8 @@ pub fn sniff(data: &[u8]) -> Option<Sniffed> {
                 let (units, xd, yd) = (*data.get(i + 11)?, be16(data, i + 12)?, be16(data, i + 14)?);
                 if units == 1 { (dpi_x, dpi_y) = (dpi(xd), dpi(yd)); }
                 if units == 2 { (dpi_x, dpi_y) = (dpi((xd as f64 * 2.54).round() as u32), dpi((yd as f64 * 2.54).round() as u32)); }
-            } else if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+            }
+            else if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
                 return Some(Sniffed { width: be16(data, i + 7)?, height: be16(data, i + 5)?, dpi_x, dpi_y, content_type: "image/jpeg" });
             }
             i += 2 + len;
@@ -89,7 +101,15 @@ fn next_drawing_id(package: &mut PackageData) -> Result<u32> {
 }
 
 /// Add image bytes and return detached drawing XML. EMU sizes default to the image's own size at its resolution, and one given size keeps the aspect ratio.
-pub fn add(package: &mut PackageData, source: &str, data: &[u8], content_type: Option<&str>, width: Option<i64>, height: Option<i64>, description: &str) -> Result<Xml> {
+pub fn add(
+    package: &mut PackageData,
+    source: &str,
+    data: &[u8],
+    content_type: Option<&str>,
+    width: Option<i64>,
+    height: Option<i64>,
+    description: &str,
+) -> Result<Xml> {
     let sniffed = sniff(data);
     let Some(content_type) = content_type.or(sniffed.as_ref().map(|s| s.content_type)) else {
         return Err(Error::Invalid("Unrecognised image format; supply content_type, width and height".into()));
@@ -105,8 +125,13 @@ pub fn add(package: &mut PackageData, source: &str, data: &[u8], content_type: O
     if width <= 0 || height <= 0 { return Err(Error::Invalid("Image extents must be positive EMUs".into())); }
     let drawing_id = next_drawing_id(package)?;
     let extension = match content_type {
-        "image/png" => "png", "image/jpeg" => "jpeg", "image/gif" => "gif", "image/tiff" => "tiff",
-        "image/svg+xml" => "svg", "image/bmp" => "bmp", _ => "bin",
+        "image/png" => "png",
+        "image/jpeg" => "jpeg",
+        "image/gif" => "gif",
+        "image/tiff" => "tiff",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        _ => "bin",
     };
     let mut doc = xml::parse_bytes(DRAWING)?;
     let mut blip = doc.root;
@@ -129,7 +154,10 @@ pub fn add(package: &mut PackageData, source: &str, data: &[u8], content_type: O
     let names: HashSet<_> = package.part_names().into_iter().map(|name| name.to_lowercase()).collect();
     let mut index = 1;
     let mut uri = format!("{directory}/media/image{index}.{extension}");
-    while names.contains(&uri.to_lowercase()) { index += 1; uri = format!("{directory}/media/image{index}.{extension}"); }
+    while names.contains(&uri.to_lowercase()) {
+        index += 1;
+        uri = format!("{directory}/media/image{index}.{extension}");
+    }
     package.add_part(&uri, content_type, data)?;
     let relationship = package.add_relationship(source, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image", &uri, "Internal", None)?;
     doc.set_attribute_ns(blip, "http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed", &relationship, "r")?;

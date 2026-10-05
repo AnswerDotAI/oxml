@@ -7,7 +7,12 @@ use quick_xml::{
     Reader, Writer, XmlVersion,
 };
 use serde_json::{json, Value};
-use std::{collections::HashSet, io::Read, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard}};
+use std::{
+    collections::HashSet,
+    io::Read,
+    ops::Deref,
+    sync::{Arc, RwLock, RwLockReadGuard},
+};
 
 const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
@@ -37,10 +42,7 @@ fn valid_name(value: &str, colon: bool) -> bool {
     chars.next().is_some_and(|c| name_start(c) || colon && c == ':')
         && chars.all(|c| name_start(c) || colon && c == ':' || matches!(c, '-' | '.' | '0'..='9' | '\u{b7}' | '\u{300}'..='\u{36f}' | '\u{203f}'..='\u{2040}'))
 }
-pub(crate) fn check_local(value: &str) -> Result<()> {
-    if !valid_name(value, false) { return Err(error(format!("Invalid XML local name {value:?}"))); }
-    Ok(())
-}
+pub(crate) fn check_local(value: &str) -> Result<()> { if !valid_name(value, false) { return Err(error(format!("Invalid XML local name {value:?}"))); } Ok(()) }
 fn base_namespaces() -> Vec<(String, String)> { vec![("".into(), "".into()), ("xml".into(), XML_NS.into())] }
 fn binding<'a>(namespaces: &'a [(String, String)], prefix: &str) -> Option<&'a str> {
     namespaces.iter().find(|(p, _)| p == prefix).map(|(_, uri)| uri.as_str())
@@ -198,10 +200,7 @@ impl Document {
         if escaped(value, true).len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
         let e = self.node(id)?.element().ok_or_else(|| error("Expected an XML element"))?;
         let found = e.attributes.iter().position(|a| a.name.uri == uri && a.name.local == local);
-        let name = match found {
-            Some(i) if prefix.is_none() => e.attributes[i].name.clone(),
-            _ => e.edit_name(uri, local, prefix, true)?,
-        };
+        let name = match found { Some(i) if prefix.is_none() => e.attributes[i].name.clone(), _ => e.edit_name(uri, local, prefix, true)? };
         let e = self.element_mut(id)?;
         let old_context = e.namespaces.len();
         if !name.prefix.is_empty() { bind(&mut e.namespaces, &name.prefix, uri)?; }
@@ -220,14 +219,18 @@ impl Document {
         let preferred = if preferred.is_empty() { "ns" } else { preferred };
         let mut prefix = preferred.to_string();
         let mut n = 1;
-        while e.namespace(&prefix).is_some() { prefix = format!("{preferred}{n}"); n += 1; }
+        while e.namespace(&prefix).is_some() {
+            prefix = format!("{preferred}{n}");
+            n += 1;
+        }
         // A prefix unbound here is unbound along the whole path from the root, so one root declaration serves the document.
         let root = self.root;
         self.declare_namespace(root, &prefix, uri)?;
         Ok(prefix)
     }
     pub fn set_attribute_ns(&mut self, id: usize, uri: &str, local: &str, value: &str, preferred: &str) -> Result<String> {
-        check_local(local)?; check_value(value)?;
+        check_local(local)?;
+        check_value(value)?;
         let prefix = self.ensure_namespace(id, uri, preferred)?;
         self.set_attribute(id, uri, local, value, Some(&prefix))?;
         Ok(prefix)
@@ -352,7 +355,12 @@ impl Document {
     }
     pub(crate) fn drop_subtree(&mut self, id: usize) {
         let mut stack = vec![id];
-        while let Some(id) = stack.pop() { if let Some(node) = self.nodes[id].take() { self.mutation = self.mutation.wrapping_add(1); stack.extend(node.children); } }
+        while let Some(id) = stack.pop() {
+            if let Some(node) = self.nodes[id].take() {
+                self.mutation = self.mutation.wrapping_add(1);
+                stack.extend(node.children);
+            }
+        }
     }
     pub(crate) fn position(&self, id: usize) -> Result<(Option<usize>, usize)> {
         let parent = self.node(id)?.parent;
@@ -761,9 +769,7 @@ impl Xml {
     #[new]
     pub fn new(data: &[u8]) -> Result<Self> {
         let document = parse_bytes(data)?;
-        Ok(Self { state: Arc::new(RwLock::new(XmlState {
-            document, cached_bytes: Some(data.to_vec()), revision: 0, live: true, read_only: false,
-        })) })
+        Ok(Self { state: Arc::new(RwLock::new(XmlState { document, cached_bytes: Some(data.to_vec()), revision: 0, live: true, read_only: false })) })
     }
     #[getter]
     pub fn root(&self) -> Result<usize> { Ok(self.read()?.root) }
@@ -771,15 +777,10 @@ impl Xml {
     pub fn revision(&self) -> u64 { self.state.read().unwrap().revision }
     pub fn same_state(&self, other: &Xml) -> bool { Arc::ptr_eq(&self.state, &other.state) }
     fn bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &py.detach(|| self.to_bytes())?)) }
-    fn subtree_bytes<'py>(&self, py: Python<'py>, id: usize) -> PyResult<Bound<'py, PyBytes>> {
-        Ok(PyBytes::new(py, &py.detach(|| self.subtree(id))?))
-    }
+    fn subtree_bytes<'py>(&self, py: Python<'py>, id: usize) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &py.detach(|| self.subtree(id))?)) }
     #[staticmethod]
     pub fn check_qname(name: &str) -> Result<()> {
-        if let Some((prefix, local)) = name.split_once(':') {
-            check_local(prefix)?;
-            check_local(local)
-        } else { check_local(name) }
+        if let Some((prefix, local)) = name.split_once(':') { check_local(prefix)?; check_local(local) } else { check_local(name) }
     }
     pub fn document_text(&self) -> Result<String> { String::from_utf8(self.read()?.serialize()?).map_err(error) }
     pub fn node(&self, id: usize) -> Result<String> { Ok(self.read()?.row(id)?.to_string()) }
@@ -788,9 +789,10 @@ impl Xml {
         let doc = self.read()?;
         let node = doc.node(id)?;
         Ok(if node.element().is_some() {
-            node.children.iter().filter_map(|id| match &doc.nodes[*id].as_ref().unwrap().kind {
-                NodeKind::Text(t) => Some(t.as_str()), _ => None,
-            }).collect()
+            node.children
+                .iter()
+                .filter_map(|id| match &doc.nodes[*id].as_ref().unwrap().kind { NodeKind::Text(t) => Some(t.as_str()), _ => None })
+                .collect()
         } else { node.text().unwrap_or("").to_string() })
     }
     pub fn qname(&self, id: usize) -> Result<(String, String)> {
@@ -816,8 +818,12 @@ impl Xml {
     pub fn position(&self, id: usize) -> Result<(Option<usize>, usize)> { self.read()?.position(id) }
     pub fn set_text(&self, id: usize, value: &str) -> Result<()> { self.edit(|doc| doc.set_text(id, value)) }
     #[pyo3(signature=(id, uri, local, value, prefix=None))]
-    pub fn set_attribute(&self, id: usize, uri: &str, local: &str, value: &str, prefix: Option<&str>) -> Result<()> { self.edit(|doc| doc.set_attribute(id, uri, local, value, prefix)) }
-    pub fn set_attribute_ns(&self, id: usize, uri: &str, local: &str, value: &str, preferred: &str) -> Result<String> { self.edit(|doc| doc.set_attribute_ns(id, uri, local, value, preferred)) }
+    pub fn set_attribute(&self, id: usize, uri: &str, local: &str, value: &str, prefix: Option<&str>) -> Result<()> {
+        self.edit(|doc| doc.set_attribute(id, uri, local, value, prefix))
+    }
+    pub fn set_attribute_ns(&self, id: usize, uri: &str, local: &str, value: &str, preferred: &str) -> Result<String> {
+        self.edit(|doc| doc.set_attribute_ns(id, uri, local, value, preferred))
+    }
     pub fn remove_attribute(&self, id: usize, uri: &str, local: &str) -> Result<()> { self.edit(|doc| doc.remove_attribute(id, uri, local)) }
     #[pyo3(signature=(id, uri, local, prefix=None))]
     pub fn rename(&self, id: usize, uri: &str, local: &str, prefix: Option<&str>) -> Result<()> { self.edit(|doc| doc.rename(id, uri, local, prefix)) }
@@ -826,39 +832,25 @@ impl Xml {
         self.edit(|doc| Self::insert_fragment(doc, Some(parent), index, data, None))
     }
     #[pyo3(signature=(parent, data, index=None))]
-    pub fn attach_xml(&self, parent: usize, data: &[u8], index: Option<usize>) -> Result<usize> {
-        self.attach_document(parent, &parse_bytes(data)?, index)
-    }
+    pub fn attach_xml(&self, parent: usize, data: &[u8], index: Option<usize>) -> Result<usize> { self.attach_document(parent, &parse_bytes(data)?, index) }
     #[pyo3(signature=(parent, source, id, index=None))]
     pub fn attach_element(&self, parent: usize, source: &Xml, id: usize, index: Option<usize>) -> Result<usize> {
         let source = source.read()?.subtree(id)?;
         self.attach_document(parent, &source, index)
     }
     pub fn insert_text(&self, parent: usize, index: usize, value: &str) -> Result<usize> {
-            self.edit(|doc| {
-                check_value(value)?;
-                doc.insert_kind(parent, index, NodeKind::Text(value.into()))
-            })
+        self.edit(|doc| { check_value(value)?; doc.insert_kind(parent, index, NodeKind::Text(value.into())) })
     }
     pub fn insert_comment(&self, parent: usize, index: usize, value: &str) -> Result<usize> {
-            self.edit(|doc| {
-                check_comment(value)?;
-                doc.insert_kind(parent, index, NodeKind::Comment(normalize_eols(value)))
-            })
+        self.edit(|doc| { check_comment(value)?; doc.insert_kind(parent, index, NodeKind::Comment(normalize_eols(value))) })
     }
     #[pyo3(signature=(parent, index, target, value=""))]
     pub fn insert_pi(&self, parent: usize, index: usize, target: &str, value: &str) -> Result<usize> {
-            self.edit(|doc| {
-                check_pi(target, value)?;
-                doc.insert_kind(parent, index, NodeKind::Pi { target: target.into(), value: normalize_eols(value) })
-            })
+        self.edit(|doc| { check_pi(target, value)?; doc.insert_kind(parent, index, NodeKind::Pi { target: target.into(), value: normalize_eols(value) }) })
     }
     pub fn delete(&self, id: usize) -> Result<()> { self.edit(|doc| doc.remove(id)) }
     pub fn replace_node(&self, id: usize, data: &[u8]) -> Result<Vec<usize>> {
-            self.edit(|doc| {
-                let (parent, index) = doc.position(id)?;
-                Self::insert_fragment(doc, parent, index, data, Some(id))
-            })
+        self.edit(|doc| { let (parent, index) = doc.position(id)?; Self::insert_fragment(doc, parent, index, data, Some(id)) })
     }
     pub fn copy(&self, id: usize, parent: usize, index: usize) -> Result<usize> { self.edit(|doc| doc.copy(id, parent, index)) }
     pub fn copy_to(&self, id: usize, destination: &Xml, parent: usize, index: usize) -> Result<usize> {
@@ -875,7 +867,11 @@ impl Xml {
         let parsed = parse_bytes(data)?;
         self.edit(|doc| {
             let mut candidate = Document {
-                nodes: vec![None; doc.nodes.len()], root: 0, children: Vec::new(), declaration: parsed.declaration.clone(), mutation: doc.mutation.wrapping_add(1),
+                nodes: vec![None; doc.nodes.len()],
+                root: 0,
+                children: Vec::new(),
+                declaration: parsed.declaration.clone(),
+                mutation: doc.mutation.wrapping_add(1),
             };
             for id in &parsed.children { candidate.import(&parsed, *id, None)?; }
             candidate.set_root()?;

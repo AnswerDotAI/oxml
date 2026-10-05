@@ -1,5 +1,11 @@
 //! Structural edits of rectangular tables. Formatting snapshots copy only the affected cells.
-use crate::{definitions::{self, children}, error::{Error, Result}, schema, text::{self, name, W, W14}, xml::{Document, Xml}};
+use crate::{
+    definitions::{self, children},
+    error::{Error, Result},
+    schema,
+    text::{self, name, W, W14},
+    xml::{Document, Xml},
+};
 use pyo3::prelude::*;
 
 fn invalid(message: &str) -> Error { Error::Invalid(message.into()) }
@@ -12,9 +18,7 @@ fn cell(doc: &Document, template: Option<usize>, value: &str) -> Result<Document
     let mut result = Document::from_element(text::word_element("tc"));
     let paragraph = template.and_then(|id| text::child(doc, id, "p"));
     let run = paragraph.and_then(|id| text::child(doc, id, "r"));
-    if let Some(template) = template {
-        for id in children(doc, template, "tcPr")? { result.import(doc, id, Some(result.root))?; }
-    }
+    if let Some(template) = template { for id in children(doc, template, "tcPr")? { result.import(doc, id, Some(result.root))?; } }
     for line in value.split('\n') {
         let root = result.root;
         let p = definitions::append(&mut result, root, "p")?;
@@ -55,15 +59,20 @@ fn grid(doc: &Document, table: usize) -> Result<(usize, Vec<usize>)> {
 }
 fn check_removal(doc: &Document, ids: &[usize]) -> Result<()> {
     for &id in ids {
-        if doc.descendants(id)?.any(|id|
-            matches!(name(doc, id), Some("bookmarkStart" | "bookmarkEnd" | "commentRangeStart" | "commentRangeEnd" | "commentReference"))) {
-            return Err(unsupported("Remove or relocate bookmarks/comments before deleting their table cells"));
-        }
+        if doc
+            .descendants(id)?
+            .any(|id| matches!(name(doc, id), Some("bookmarkStart" | "bookmarkEnd" | "commentRangeStart" | "commentRangeEnd" | "commentReference")))
+        { return Err(unsupported("Remove or relocate bookmarks/comments before deleting their table cells")); }
     }
     Ok(())
 }
 #[pyclass(module = "oxml._core")]
-pub struct Table { #[pyo3(get)] pub xml: Xml, #[pyo3(get)] pub node_id: usize }
+pub struct Table {
+    #[pyo3(get)]
+    pub xml: Xml,
+    #[pyo3(get)]
+    pub node_id: usize,
+}
 #[pymethods]
 impl Table {
     #[new]

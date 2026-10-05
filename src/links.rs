@@ -11,48 +11,31 @@ use std::collections::HashSet;
 const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const HYPERLINK: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const STRICT_HYPERLINK: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships/hyperlink";
-fn invalid(message: &str) -> Error {
-    Error::Invalid(message.into())
-}
-fn editable(story: &Story) -> Result<()> {
-    if story.view != View::Current {
-        return Err(text::unsupported("Original text view is read-only"));
-    }
-    Ok(())
-}
+fn invalid(message: &str) -> Error { Error::Invalid(message.into()) }
+fn editable(story: &Story) -> Result<()> { if story.view != View::Current { return Err(text::unsupported("Original text view is read-only")); } Ok(()) }
 fn selection(story: &Story, span: &Range, anchor: bool) -> Result<text::Selection> {
     editable(story)?;
     span.editable()?;
-    if !story.xml.same_state(&span.story.xml) {
-        return Err(invalid("Range belongs to another XML tree"));
-    }
+    if !story.xml.same_state(&span.story.xml) { return Err(invalid("Range belongs to another XML tree")); }
     let doc = story.xml.read()?;
     let selected = span.selection(&doc, anchor)?;
     text::inside(&doc, story.element, selected.paragraph)?;
     Ok(selected)
 }
 fn name_value(name: &str) -> Result<()> {
-    if name.is_empty() || name.chars().any(char::is_whitespace) {
-        return Err(invalid("Bookmark name requires a nonempty string without whitespace"));
-    }
+    if name.is_empty() || name.chars().any(char::is_whitespace) { return Err(invalid("Bookmark name requires a nonempty string without whitespace")); }
     Ok(())
 }
-fn integer(value: Option<&str>) -> Result<i64> {
-    value.unwrap_or("").parse().map_err(|_| invalid("Invalid bookmark ID"))
-}
+fn integer(value: Option<&str>) -> Result<i64> { value.unwrap_or("").parse().map_err(|_| invalid("Invalid bookmark ID")) }
 fn unique(mut values: impl Iterator<Item = usize>, label: &str) -> Result<Option<usize>> {
     let first = values.next();
-    if values.next().is_some() {
-        return Err(Error::Invalid(format!("Ambiguous {label}")));
-    }
+    if values.next().is_some() { return Err(Error::Invalid(format!("Ambiguous {label}"))); }
     Ok(first)
 }
 fn marker(local: &str, ident: &str, name: Option<&str>) -> Result<Document> {
     let mut result = Document::from_element(text::word_element(local));
     result.set_attribute(result.root, W, "id", ident, Some("w"))?;
-    if let Some(name) = name {
-        result.set_attribute(result.root, W, "name", name, Some("w"))?;
-    }
+    if let Some(name) = name { result.set_attribute(result.root, W, "name", name, Some("w"))?; }
     Ok(result)
 }
 #[pyfunction]
@@ -86,32 +69,21 @@ fn ref_field(name: &str, text: &str, switches: &str) -> Result<Xml> {
 
 #[pyclass(name = "NativeBookmarks", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Bookmarks {
-    story: Story,
-}
+pub struct Bookmarks { story: Story }
 #[pymethods]
 impl Bookmarks {
     #[new]
-    pub fn new(story: Story) -> Self {
-        Self { story }
-    }
+    pub fn new(story: Story) -> Self { Self { story } }
     pub fn items(&self) -> Result<Vec<Bookmark>> {
         let doc = self.story.xml.read()?;
         let nodes = doc.descendants(self.story.element)?;
-        Ok(nodes
-            .filter(|&id| text::name(&doc, id) == Some("bookmarkStart"))
-            .map(|element| Bookmark { bookmarks: self.clone(), element })
-            .collect())
+        Ok(nodes.filter(|&id| text::name(&doc, id) == Some("bookmarkStart")).map(|element| Bookmark { bookmarks: self.clone(), element }).collect())
     }
     pub fn find(&self, name: &str) -> Result<Option<Bookmark>> {
         let mut found = None;
         for bookmark in self.items()? {
-            if bookmark.name()?.as_deref() != Some(name) {
-                continue;
-            }
-            if found.is_some() {
-                return Err(invalid("Ambiguous bookmark name"));
-            }
+            if bookmark.name()?.as_deref() != Some(name) { continue; }
+            if found.is_some() { return Err(invalid("Ambiguous bookmark name")); }
             found = Some(bookmark);
         }
         Ok(found)
@@ -123,13 +95,9 @@ impl Bookmarks {
             let doc = self.story.xml.read()?;
             let mut used = HashSet::new();
             for id in doc.element_ids() {
-                if !matches!(text::name(&doc, id), Some("bookmarkStart" | "bookmarkEnd")) {
-                    continue;
-                }
+                if !matches!(text::name(&doc, id), Some("bookmarkStart" | "bookmarkEnd")) { continue; }
                 let e = doc.node(id)?.element().unwrap();
-                if e.attribute(W, "name") == Some(name) {
-                    return Err(invalid("Bookmark name already exists"));
-                }
+                if e.attribute(W, "name") == Some(name) { return Err(invalid("Bookmark name already exists")); }
                 used.insert(integer(e.attribute(W, "id"))?);
             }
             (0..).find(|id| !used.contains(id)).unwrap().to_string()
@@ -153,10 +121,7 @@ impl Bookmarks {
 }
 #[pyclass(name = "NativeBookmark", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Bookmark {
-    bookmarks: Bookmarks,
-    element: usize,
-}
+pub struct Bookmark { bookmarks: Bookmarks, element: usize }
 impl Bookmark {
     fn text(&self) -> Result<String> {
         let range = self.range()?;
@@ -168,42 +133,24 @@ impl Bookmark {
         let mut starts = Vec::new();
         let mut ends = Vec::new();
         for id in doc.descendants(self.bookmarks.story.element)? {
-            if !matches!(text::name(&doc, id), Some("bookmarkStart" | "bookmarkEnd")) {
-                continue;
-            }
-            if integer(doc.node(id)?.element().unwrap().attribute(W, "id"))? != ident {
-                continue;
-            }
-            if text::name(&doc, id) == Some("bookmarkStart") {
-                starts.push(id);
-            } else {
-                ends.push(id);
-            }
+            if !matches!(text::name(&doc, id), Some("bookmarkStart" | "bookmarkEnd")) { continue; }
+            if integer(doc.node(id)?.element().unwrap().attribute(W, "id"))? != ident { continue; }
+            if text::name(&doc, id) == Some("bookmarkStart") { starts.push(id); } else { ends.push(id); }
         }
-        if starts.len() != 1 {
-            return Err(invalid("Ambiguous bookmark ID"));
-        }
+        if starts.len() != 1 { return Err(invalid("Ambiguous bookmark ID")); }
         unique(ends.into_iter(), "bookmark end")?.ok_or_else(|| invalid("Bookmark end is missing from this story"))
     }
 }
 #[pymethods]
 impl Bookmark {
     #[getter]
-    pub fn xml(&self) -> Xml {
-        self.bookmarks.story.xml.clone()
-    }
+    pub fn xml(&self) -> Xml { self.bookmarks.story.xml.clone() }
     #[getter]
-    pub fn element_id(&self) -> usize {
-        self.element
-    }
+    pub fn element_id(&self) -> usize { self.element }
     #[getter]
-    pub fn name(&self) -> Result<Option<String>> {
-        self.xml().attribute(self.element, W, "name")
-    }
+    pub fn name(&self) -> Result<Option<String>> { self.xml().attribute(self.element, W, "name") }
     #[getter]
-    pub fn id(&self) -> Result<i64> {
-        integer(self.xml().attribute(self.element, W, "id")?.as_deref())
-    }
+    pub fn id(&self) -> Result<i64> { integer(self.xml().attribute(self.element, W, "id")?.as_deref()) }
     #[getter]
     pub fn range(&self) -> Result<Range> {
         let story = &self.bookmarks.story;
@@ -213,29 +160,19 @@ impl Bookmark {
         editable(&self.bookmarks.story)?;
         let end = self.end()?;
         self.range()?;
-        self.xml().edit(|doc| {
-            doc.remove(end)?;
-            doc.remove(self.element)
-        })
+        self.xml().edit(|doc| { doc.remove(end)?; doc.remove(self.element) })
     }
     #[pyo3(signature=(text=None, switches=""))]
     pub fn reference(&self, text: Option<&str>, switches: &str) -> Result<Xml> {
         let name = self.name()?.ok_or_else(|| invalid("Bookmark name is missing"))?;
-        let text = match text {
-            Some(s) => s.to_string(),
-            None => self.text()?,
-        };
+        let text = match text { Some(s) => s.to_string(), None => self.text()? };
         ref_field(&name, &text, switches)
     }
 }
 
 #[pyclass(name = "NativeHyperlinks", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Hyperlinks {
-    package: Package,
-    story: Story,
-    claimed_uri: Option<String>,
-}
+pub struct Hyperlinks { package: Package, story: Story, claimed_uri: Option<String> }
 impl Hyperlinks {
     fn shell(&self, target: &str, part_uri: Option<&str>) -> Result<Document> {
         if target.is_empty() { return Err(invalid("Hyperlink target requires a nonempty string")); }
@@ -243,7 +180,8 @@ impl Hyperlinks {
         if let Some(anchor) = target.strip_prefix('#') {
             name_value(anchor)?;
             link.set_attribute(link.root, W, "anchor", anchor, Some("w"))?;
-        } else {
+        }
+        else {
             let id = self.external_id(target, part_uri)?;
             link.set_attribute(link.root, R, "id", &id, Some("r"))?;
         }
@@ -252,14 +190,16 @@ impl Hyperlinks {
     fn owner(&self) -> Result<String> {
         let uri = self.package.owner(&self.story.xml)?;
         if let Some(claimed) = &self.claimed_uri {
-            if self.package.resolve_part(claimed)? != uri {
-                return Err(invalid("Story does not belong to the claimed package part"));
-            }
+            if self.package.resolve_part(claimed)? != uri { return Err(invalid("Story does not belong to the claimed package part")); }
         }
         Ok(uri)
     }
     fn find_external(&self, uri: &str, target: &str) -> Result<Option<String>> {
-        let found = self.package.lock()?.relationships(uri)?.into_iter()
+        let found = self
+            .package
+            .lock()?
+            .relationships(uri)?
+            .into_iter()
             .find(|r| matches!(r.kind.as_str(), HYPERLINK | STRICT_HYPERLINK) && r.mode == "External" && r.target == target);
         Ok(found.map(|r| r.id))
     }
@@ -273,9 +213,7 @@ impl Hyperlinks {
     }
     fn release(&self, uri: &str, relation: Option<Relationship>) -> Result<()> {
         let Some(rel) = relation.filter(|r| matches!(r.kind.as_str(), HYPERLINK | STRICT_HYPERLINK)) else { return Ok(()) };
-        if self.references(&rel.id)? == 0 {
-            self.package.remove_relationship(uri, &rel.id)?;
-        }
+        if self.references(&rel.id)? == 0 { self.package.remove_relationship(uri, &rel.id)?; }
         Ok(())
     }
 }
@@ -296,23 +234,16 @@ impl Hyperlinks {
     }
     #[new]
     #[pyo3(signature=(package,story,part_uri=None))]
-    pub fn new(package: Package, story: Story, part_uri: Option<String>) -> Self {
-        Self { package, story, claimed_uri: part_uri }
-    }
+    pub fn new(package: Package, story: Story, part_uri: Option<String>) -> Self { Self { package, story, claimed_uri: part_uri } }
     pub fn items(&self) -> Result<Vec<Hyperlink>> {
         self.owner()?;
         let doc = self.story.xml.read()?;
         let nodes = doc.descendants(self.story.element)?;
-        Ok(nodes
-            .filter(|&id| text::name(&doc, id) == Some("hyperlink"))
-            .map(|element| Hyperlink { hyperlinks: self.clone(), element })
-            .collect())
+        Ok(nodes.filter(|&id| text::name(&doc, id) == Some("hyperlink")).map(|element| Hyperlink { hyperlinks: self.clone(), element }).collect())
     }
     pub fn add(&self, span: &Range, target: &str) -> Result<Hyperlink> {
         let selected = selection(&self.story, span, false)?;
-        if span.start == span.end {
-            return Err(invalid("A hyperlink requires a nonempty text range"));
-        }
+        if span.start == span.end { return Err(invalid("A hyperlink requires a nonempty text range")); }
         self.owner()?;
         let link = self.shell(target, None)?;
         let element = self.story.xml.edit(|doc| {
@@ -320,9 +251,7 @@ impl Hyperlinks {
             let stop = doc.position(*isolated.runs.last().unwrap())?.1 + 1;
             let selected = doc.node(isolated.paragraph)?.children[isolated.index..stop].to_vec();
             let element = text::attach(doc, isolated.paragraph, isolated.index, &link)?;
-            for id in selected {
-                doc.move_node(id, element, doc.node(element)?.children.len())?;
-            }
+            for id in selected { doc.move_node(id, element, doc.node(element)?.children.len())?; }
             Ok(element)
         })?;
         Ok(Hyperlink { hyperlinks: self.clone(), element })
@@ -330,10 +259,7 @@ impl Hyperlinks {
 }
 #[pyclass(name = "NativeHyperlink", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Hyperlink {
-    hyperlinks: Hyperlinks,
-    element: usize,
-}
+pub struct Hyperlink { hyperlinks: Hyperlinks, element: usize }
 impl Hyperlink {
     fn relationship(&self) -> Result<Option<Relationship>> {
         let ident = self.xml().attribute(self.element, R, "id")?;
@@ -345,62 +271,43 @@ impl Hyperlink {
 #[pymethods]
 impl Hyperlink {
     #[getter]
-    pub fn xml(&self) -> Xml {
-        self.hyperlinks.story.xml.clone()
-    }
+    pub fn xml(&self) -> Xml { self.hyperlinks.story.xml.clone() }
     #[getter]
-    pub fn element_id(&self) -> usize {
-        self.element
-    }
+    pub fn element_id(&self) -> usize { self.element }
     #[getter]
-    pub fn anchor(&self) -> Result<Option<String>> {
-        self.xml().attribute(self.element, W, "anchor")
-    }
+    pub fn anchor(&self) -> Result<Option<String>> { self.xml().attribute(self.element, W, "anchor") }
     #[getter]
-    pub fn text(&self) -> Result<String> {
-        Ok(text::paragraph(&*self.xml().read()?, self.element, self.hyperlinks.story.view, false)?.text)
-    }
+    pub fn text(&self) -> Result<String> { Ok(text::paragraph(&*self.xml().read()?, self.element, self.hyperlinks.story.view, false)?.text) }
     #[getter]
     pub fn target(&self) -> Result<Option<String>> {
         let relationship = self.relationship()?;
         let Some(rel) = relationship else {
-            if self.xml().attribute(self.element, R, "id")?.is_some() {
-                return Err(Error::Missing("Hyperlink relationship is missing".into()));
-            }
+            if self.xml().attribute(self.element, R, "id")?.is_some() { return Err(Error::Missing("Hyperlink relationship is missing".into())); }
             return Ok(self.anchor()?.map(|a| format!("#{a}")));
         };
-        if !matches!(rel.kind.as_str(), HYPERLINK | STRICT_HYPERLINK) {
-            return Err(invalid("Hyperlink ID references a different relationship type"));
-        }
-        if rel.mode == "External" {
-            return Ok(Some(rel.target));
-        }
+        if !matches!(rel.kind.as_str(), HYPERLINK | STRICT_HYPERLINK) { return Err(invalid("Hyperlink ID references a different relationship type")); }
+        if rel.mode == "External" { return Ok(Some(rel.target)); }
         let target = self.hyperlinks.package.relationship_target(&self.hyperlinks.owner()?, &rel.target)?;
-        Ok(Some(match rel.target.split_once('#') {
-            Some((_, fragment)) => format!("{target}#{fragment}"),
-            None => target,
-        }))
+        Ok(Some(match rel.target.split_once('#') { Some((_, fragment)) => format!("{target}#{fragment}"), None => target }))
     }
     #[setter]
     pub fn set_target(&self, target: &str) -> Result<()> {
         editable(&self.hyperlinks.story)?;
-        if target.is_empty() {
-            return Err(invalid("Hyperlink target requires a nonempty string"));
-        }
+        if target.is_empty() { return Err(invalid("Hyperlink target requires a nonempty string")); }
         let uri = self.hyperlinks.owner()?;
         let previous = self.relationship()?;
         let xml = self.xml();
         if let Some(anchor) = target.strip_prefix('#') {
             name_value(anchor)?;
-            xml.edit(|doc| {
-                doc.remove_attribute(self.element, R, "id")?;
-                doc.set_attribute(self.element, W, "anchor", anchor, Some("w"))
-            })?;
-        } else {
+            xml.edit(|doc| { doc.remove_attribute(self.element, R, "id")?; doc.set_attribute(self.element, W, "anchor", anchor, Some("w")) })?;
+        }
+        else {
             let ident = match self.hyperlinks.find_external(&uri, target)? {
                 Some(id) => id,
                 None => match &previous {
-                    Some(rel) if matches!(rel.kind.as_str(), HYPERLINK | STRICT_HYPERLINK) && rel.mode == "External" && self.hyperlinks.references(&rel.id)? == 1 => {
+                    Some(rel)
+                        if matches!(rel.kind.as_str(), HYPERLINK | STRICT_HYPERLINK) && rel.mode == "External" && self.hyperlinks.references(&rel.id)? == 1 =>
+                    {
                         let mut package = self.hyperlinks.package.lock()?;
                         package.remove_relationship(&uri, &rel.id)?;
                         package.add_relationship(&uri, HYPERLINK, target, "External", Some(&rel.id))?
@@ -408,10 +315,7 @@ impl Hyperlink {
                     _ => self.hyperlinks.external_relationship(&uri, target)?,
                 },
             };
-            xml.edit(|doc| {
-                doc.remove_attribute(self.element, W, "anchor")?;
-                doc.set_attribute(self.element, R, "id", &ident, Some("r"))
-            })?;
+            xml.edit(|doc| { doc.remove_attribute(self.element, W, "anchor")?; doc.set_attribute(self.element, R, "id", &ident, Some("r")) })?;
         }
         self.hyperlinks.release(&uri, previous)
     }
@@ -424,17 +328,14 @@ impl Hyperlink {
             let doc = xml.read()?;
             text::inside(&doc, self.hyperlinks.story.element, self.element)?;
             let (parent, index) = doc.position(self.element)?;
-            let parent = parent
-                .filter(|&p| text::name(&doc, p) == Some("p"))
-                .ok_or_else(|| text::unsupported("Only direct paragraph hyperlinks can be unwrapped"))?;
+            let parent =
+                parent.filter(|&p| text::name(&doc, p) == Some("p")).ok_or_else(|| text::unsupported("Only direct paragraph hyperlinks can be unwrapped"))?;
             text::context(&doc, parent)?;
             (parent, index)
         };
         xml.edit(|doc| {
             let children = doc.node(self.element)?.children.clone();
-            for (offset, id) in children.into_iter().enumerate() {
-                doc.move_node(id, parent, index + offset)?;
-            }
+            for (offset, id) in children.into_iter().enumerate() { doc.move_node(id, parent, index + offset)?; }
             doc.remove(self.element)
         })?;
         self.hyperlinks.release(&uri, relation)?;

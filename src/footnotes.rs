@@ -18,7 +18,9 @@ fn reference_run(id: i64) -> Result<Document> {
     parse(format!(r#"<w:r xmlns:w="{W}"><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="{id}"/></w:r>"#))
 }
 fn separator(kind: &str, id: i64) -> Result<Document> {
-    parse(format!(r#"<w:footnote xmlns:w="{W}" w:type="{kind}" w:id="{id}"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:{kind}/></w:r></w:p></w:footnote>"#))
+    parse(format!(
+        r#"<w:footnote xmlns:w="{W}" w:type="{kind}" w:id="{id}"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:{kind}/></w:r></w:p></w:footnote>"#
+    ))
 }
 fn attribute<'a>(doc: &'a Document, id: usize, local: &str) -> Option<&'a str> { doc.node(id).ok()?.element()?.attribute(W, local) }
 fn notes(doc: &Document) -> Result<Vec<usize>> {
@@ -43,14 +45,18 @@ fn style_paragraph(doc: &mut Document, paragraph: usize, first: bool) -> Result<
 
 #[pyclass(name = "NativeFootnotes", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Footnotes {
-    package: Package,
-}
+pub struct Footnotes { package: Package }
 impl Footnotes {
     fn ensure_styles(&self) -> Result<()> {
         for (id, display, kind, base, paragraph, run) in [
-            ("FootnoteText", "footnote text", "paragraph", "Normal", &[r#"spacing w:after="0" w:line="240" w:lineRule="auto""#][..],
-                &[r#"sz w:val="20""#, r#"szCs w:val="20""#][..]),
+            (
+                "FootnoteText",
+                "footnote text",
+                "paragraph",
+                "Normal",
+                &[r#"spacing w:after="0" w:line="240" w:lineRule="auto""#][..],
+                &[r#"sz w:val="20""#, r#"szCs w:val="20""#][..],
+            ),
             ("FootnoteReference", "footnote reference", "character", "DefaultParagraphFont", &[][..], &[r#"vertAlign w:val="superscript""#][..]),
         ] {
             match definitions::style_get(&self.package, id) { Ok(_) => continue, Err(Error::Missing(_)) => (), Err(e) => return Err(e) }
@@ -69,10 +75,7 @@ impl Footnotes {
             let present = { let doc = xml.read()?; notes(&doc)?.into_iter().any(|n| attribute(&doc, n, "type") == Some(kind)) };
             if present { continue; }
             let note = separator(kind, id)?;
-            xml.edit(|doc| {
-                let position = insertion_position(doc, doc.root, W, "footnote")?;
-                text::attach(doc, doc.root, position, &note).map(|_| ())
-            })?;
+            xml.edit(|doc| { let position = insertion_position(doc, doc.root, W, "footnote")?; text::attach(doc, doc.root, position, &note).map(|_| ()) })?;
         }
         Ok(Some(xml))
     }
@@ -135,11 +138,7 @@ impl Footnotes {
 
 #[pyclass(name = "NativeFootnote", module = "oxml._core", from_py_object)]
 #[derive(Clone)]
-pub struct Footnote {
-    footnotes: Footnotes,
-    xml: Xml,
-    element: usize,
-}
+pub struct Footnote { footnotes: Footnotes, xml: Xml, element: usize }
 #[pymethods]
 impl Footnote {
     #[getter]
@@ -147,11 +146,11 @@ impl Footnote {
     #[getter]
     pub fn element_id(&self) -> usize { self.element }
     #[getter]
-    pub fn id(&self) -> Result<i64> {
-        self.xml.attribute(self.element, W, "id")?.unwrap_or_default().parse().map_err(|_| invalid("Invalid footnote ID"))
-    }
+    pub fn id(&self) -> Result<i64> { self.xml.attribute(self.element, W, "id")?.unwrap_or_default().parse().map_err(|_| invalid("Invalid footnote ID")) }
     #[getter]
-    pub fn text(&self) -> Result<String> { Story::new_native(self.xml.clone(), self.element, View::Current)?.text_native().map(|text| text.trim_start().to_string()) }
+    pub fn text(&self) -> Result<String> {
+        Story::new_native(self.xml.clone(), self.element, View::Current)?.text_native().map(|text| text.trim_start().to_string())
+    }
     /// A detached run carrying this note's reference mark.
     pub fn reference(&self) -> Result<Xml> { Ok(Xml::from_document(reference_run(self.id()?)?)) }
     /// Remove the note and every run referencing it; returns the number of references removed.
@@ -162,8 +161,11 @@ impl Footnote {
         for uri in uris {
             let xml = self.footnotes.package.lock()?.load_xml(&uri)?;
             removed += xml.edit(|doc| {
-                let references: Vec<usize> = doc.element_ids().into_iter()
-                    .filter(|&n| text::name(doc, n) == Some("footnoteReference") && attribute(doc, n, "id") == Some(ident.as_str())).collect();
+                let references: Vec<usize> = doc
+                    .element_ids()
+                    .into_iter()
+                    .filter(|&n| text::name(doc, n) == Some("footnoteReference") && attribute(doc, n, "id") == Some(ident.as_str()))
+                    .collect();
                 for reference in &references {
                     let run = doc.node(*reference)?.parent.unwrap();
                     let other = doc.node(run)?.children.iter().any(|&c| c != *reference && text::name(doc, c) != Some("rPr"));
