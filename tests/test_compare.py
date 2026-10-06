@@ -7,6 +7,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
 from oxml import Document, e, Story, compare, namespace_uris, w
+from oxml.links import Bookmarks
 from corpus_helpers import parts
 
 W = f"{{{namespace_uris['w']}}}"
@@ -93,16 +94,19 @@ def test_block_alignment_around_tables_and_container_ends(accept):
 
 @pytest.mark.parametrize('accept', [False, True])
 def test_table_cells_compare_locally_beside_changed_paragraphs(accept):
-    def table(*cells):
+    def table(*cells, bold=False):
         return e.tbl(e.tblPr(e.tblW(type='auto', w=0)), e.tblGrid(*(e.gridCol(w=2000) for _ in cells)),
-            e.tr(*(e.tc(e.tcPr(e.tcW(type='dxa', w=2000)), e.p(e.r(e.t(cell)))) for cell in cells)))
+            e.tr(*(e.tc(e.tcPr(e.tcW(type='dxa', w=2000)), e.p(e.r(e.rPr(e.b()) if bold and i == 0 else None, e.t(cell))))
+                for i, cell in enumerate(cells))))
     before = document(paragraph(('Fees', '')), table('Remote desk', '4 hours'), paragraph(('after', '')))
-    after = document(paragraph(('Fees and levels', '')), table('Remote desk', '2 hours'), paragraph(('after', '')))
+    after = document(paragraph(('Fees and levels', '')), table('Remote desk', '2 hours', bold=True), paragraph(('after', '')))
     result = compare(before, after, author='Reviewer')
     assert views(result) == (before.story.text, after.story.text)
-    assert [r.text for r in result.revisions if not r.is_boundary] == [' and levels', '4', '2']
+    assert [r.text for r in result.revisions if r.kind in ('ins', 'del') and not r.is_boundary] == [' and levels', '4', '2']
     result.revisions.accept_all() if accept else result.revisions.reject_all()
     assert result.story.text == (after if accept else before).story.text
+    first = ET.fromstring(result.main.read_bytes()).find(W+'body/'+W+'tbl/'+W+'tr/'+W+'tc/'+W+'p/'+W+'r')
+    assert (first.find(W+'rPr/'+W+'b') is not None) == accept
     assert not result.validate()['issues']
 
 @pytest.mark.parametrize('accept', [False, True])
@@ -137,10 +141,27 @@ def test_moved_bookmarked_paragraph_keeps_one_bookmark(accept):
     for doc in (before, after): doc.bookmarks.add(doc.story.find('cap'), 'Cap')
     result = compare(before, after, author='Reviewer')
     assert views(result) == (before.story.text, after.story.text)
-    assert [b.name for b in result.bookmarks] == ['Cap'] and result.bookmarks['Cap'].range.text == 'cap'
-    result.revisions.accept_all() if accept else result.revisions.reject_all()
-    assert result.story.text == (after if accept else before).story.text
-    assert all(b.name == 'Cap' and b.range.text == 'cap' for b in result.bookmarks)
+    result = Document.from_bytes(result.bytes())
+    for view, expected in [('current', after), ('original', before)]:
+        bookmarks = Bookmarks(Story(result.main.xml.root, view=view))
+        span = expected.story.find('cap')
+        assert [(b.name, b.range.start, b.range.end, b.range.text) for b in bookmarks] == [('Cap', span.start, span.end, 'cap')]
+        assert bookmarks['Cap'].range.start == span.start
+    root = ET.fromstring(result.main.read_bytes())
+    ids = {s.get(W+'id') for s in root.iter(W+'bookmarkStart')}
+    assert len(ids) == 2 and ids == {s.get(W+'id') for s in root.iter(W+'bookmarkEnd')}
+    assert not result.validate()['issues']
+    if accept:
+        for change in list(result.revisions): change.accept()
+    else: result.revisions.reject_all()
+    result = Document.from_bytes(result.bytes())
+    expected = after if accept else before
+    span = expected.story.find('cap')
+    assert result.story.text == expected.story.text
+    assert [(b.name, b.range.start, b.range.end, b.range.text) for b in result.bookmarks] == [('Cap', span.start, span.end, 'cap')]
+    root = ET.fromstring(result.main.read_bytes())
+    starts, ends = list(root.iter(W+'bookmarkStart')), list(root.iter(W+'bookmarkEnd'))
+    assert len(starts) == len(ends) == 1 and starts[0].get(W+'id') == ends[0].get(W+'id')
     assert not result.validate()['issues']
 
 def test_real_docx_noop_metadata_noise_and_changed_dependency_refusal():

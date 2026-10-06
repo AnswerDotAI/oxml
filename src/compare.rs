@@ -378,7 +378,8 @@ fn pair_properties(
     }
     Ok(())
 }
-/// A bookmark arriving with inserted text keeps its name under a fresh id, and the copy left in deleted text loses its markers, as in Word.
+/// Keep both bookmark locations under distinct IDs. Original markers become deletions, so resolving the revisions
+/// selects the right location without losing the information needed for rejection.
 fn settle_bookmarks(doc: &mut Document, scope: usize, metadata: &mut Metadata) -> Result<()> {
     let markers = doc.descendants(scope)?.filter(|&id| matches!(text::name(doc, id), Some("bookmarkStart" | "bookmarkEnd"))).collect::<Vec<_>>();
     let inserted = |id: usize| std::iter::successors(Some(id), |&id| doc.node(id).ok()?.parent).any(|id| text::name(doc, id) == Some("ins"));
@@ -398,7 +399,15 @@ fn settle_bookmarks(doc: &mut Document, scope: usize, metadata: &mut Metadata) -
             .filter(|&id| text::name(doc, id) == Some("bookmarkStart") && attribute(doc, id, "name") == name)
             .map(|id| attribute(doc, id, "id"))
             .collect::<Vec<_>>();
-        for &id in &outside { if stale.contains(&attribute(doc, id, "id")) { doc.remove(id)?; } }
+        for &id in &outside {
+            if !stale.contains(&attribute(doc, id, "id")) { continue; }
+            let (parent, index) = doc.position(id)?;
+            if text::name(doc, parent.unwrap()) == Some("del") { continue; }
+            if text::name(doc, parent.unwrap()) != Some("p") { return Err(unsupported("Moved bookmark markers in unsupported containers")); }
+            let deletion = metadata.element("del", None)?;
+            let wrapper = text::attach(doc, parent.unwrap(), index, &deletion)?;
+            doc.move_node(id, wrapper, 0)?;
+        }
     }
     Ok(())
 }

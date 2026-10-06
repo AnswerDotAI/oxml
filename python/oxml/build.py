@@ -10,9 +10,7 @@ def _bytes(value):
 
 class _Snapshot(_XML):
     def __init__(self, element):
-        uri, local = element.qname
-        prefix = next(p for p, u in element.raw['namespaces'] if u == uri)
-        self.tag, self.ns, self.attrs, self.children = (f'{prefix}:{local}' if prefix else local), {prefix: uri}, {}, ()
+        self.children = ()
         self._data = element._tree.xml.subtree_bytes(element.node_id).decode('utf-8')
     def _render(self, inherited, output): output.append(self._data)
 

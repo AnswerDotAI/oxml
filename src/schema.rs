@@ -193,11 +193,12 @@ pub fn on_off_attributes() -> Vec<(&'static str, &'static str)> {
 #[pyo3(signature=(xml, type_id=None, root=None))]
 pub fn elements_of_type(xml: &Xml, type_id: Option<&str>, root: Option<usize>) -> Result<Vec<usize>> {
     let doc = xml.read()?;
-    let ids: Vec<usize> = match root { Some(r) => doc.descendants(r)?.filter(|&id| id != r).collect(), None => doc.element_ids() };
-    if type_id.is_none() { return Ok(ids); }
-    ids.into_iter()
-        .filter_map(|id| match document_type(&doc, id) { Ok(actual) if actual == type_id => Some(Ok(id)), Err(error) => Some(Err(error)), _ => None })
-        .collect()
+    let mut result = Vec::new();
+    for id in doc.descendants(root.unwrap_or(doc.root))? {
+        if root == Some(id) { continue; }
+        if type_id.is_none() || document_type(&doc, id)? == type_id { result.push(id); }
+    }
+    Ok(result)
 }
 
 #[pyfunction]

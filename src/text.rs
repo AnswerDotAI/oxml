@@ -171,6 +171,7 @@ impl View {
         match value { "current" => Ok(Self::Current), "original" => Ok(Self::Original), _ => Err(invalid("view must be current or original")) }
     }
     fn label(self) -> &'static str { if self == Self::Current { "current" } else { "original" } }
+    pub(crate) fn includes(self, local: &str) -> bool { match local { "ins" => self == Self::Current, "del" => self == Self::Original, _ => true } }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Span { pub element: Option<usize>, pub start: usize, pub end: usize }
@@ -261,7 +262,7 @@ pub fn paragraph(doc: &Document, element: usize, view: View, positions: bool) ->
                     if visible && history(doc, id) { out.block(start, out.len, true); }
                 }
                 Some(local @ ("ins" | "del" | "hyperlink")) => {
-                    visit(doc, root, id, visible && (local == "hyperlink" || (local == "ins") == (view == View::Current)), view, positions, out)?;
+                    visit(doc, root, id, visible && view.includes(local), view, positions, out)?;
                     out.block(start, out.len, true);
                 }
                 Some("fldSimple") => {
@@ -332,7 +333,7 @@ pub fn paragraphs(doc: &Document, root: usize, view: View) -> Result<Vec<Row>> {
     for (id, adjacent) in physical {
         if let Some(previous) = result.last() {
             let marks = previous.paragraph.map(|p| marks(doc, p)).unwrap_or_default();
-            let hidden = adjacent && marks.len() == 1 && name(doc, marks[0]) == Some(if view == View::Current { "del" } else { "ins" });
+            let hidden = adjacent && marks.len() == 1 && !view.includes(name(doc, marks[0]).unwrap());
             if !hidden { position += 1; }
         }
         let projection = match id {

@@ -77,7 +77,13 @@ impl Bookmarks {
     pub fn items(&self) -> Result<Vec<Bookmark>> {
         let doc = self.story.xml.read()?;
         let nodes = doc.descendants(self.story.element)?;
-        Ok(nodes.filter(|&id| text::name(&doc, id) == Some("bookmarkStart")).map(|element| Bookmark { bookmarks: self.clone(), element }).collect())
+        Ok(nodes
+            .filter(|&id| {
+                text::name(&doc, id) == Some("bookmarkStart")
+                    && std::iter::successors(Some(id), |&id| doc.node(id).ok()?.parent).all(|id| self.story.view.includes(text::name(&doc, id).unwrap_or("")))
+            })
+            .map(|element| Bookmark { bookmarks: self.clone(), element })
+            .collect())
     }
     pub fn find(&self, name: &str) -> Result<Option<Bookmark>> {
         let mut found = None;
