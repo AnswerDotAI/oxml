@@ -173,6 +173,22 @@ def test_unsafe_or_duplicate_zip_names_refused(name):
     with pytest.raises(ValueError, match='Unsafe|Invalid OPC|Duplicate'): Package(source)
 
 
+@pytest.mark.parametrize('name', ['caf%C3%A9.bin', 'caf%C3%A9/'])
+def test_zip_names_roundtrip(name):
+    source = rewrite(Package.new().bytes(), extra=[(name, b'')])
+    package = Package(source)
+    assert package.bytes() == source
+    package.add_part('/new.bin', 'application/octet-stream', b'new')
+    result = package.bytes()
+    assert entries(result)[name] == b''
+    assert (f'/{name}' in Package(result).part_names()) == (not name.endswith('/'))
+
+
+def test_non_utf8_zip_name_refused():
+    source = rewrite(Package.new().bytes(), extra=[('opaque.bin', b'data')]).replace(b'opaque.bin', b'\x82paque.bin')
+    with pytest.raises(ValueError, match='Non-UTF-8'): Package(source)
+
+
 @pytest.mark.parametrize('kind, message', [('encrypted', 'Encrypted'), ('oversize', '256 MiB'), ('count', '10,000'), ('zip64', 'ZIP64')])
 def test_archive_preflight_limits(kind, message):
     source = bytearray(rewrite(Package.new().bytes(), extra=[('opaque.bin', b'data')]))

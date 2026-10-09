@@ -232,8 +232,9 @@ impl PackageData {
                 || local[6..10] != central_header[8..12]
                 || data.get(local_name_start..local_name_end) != Some(entry.name_raw())
             { return Err(invalid("ZIP local-header name, flags or compression method disagrees with the central directory")); }
-            if std::str::from_utf8(entry.name_raw()).ok() != Some(entry.name()) { return Err(invalid("Non-UTF-8 ZIP entry names are unsupported")); }
-            let uri = format!("/{}", entry.name().strip_suffix('/').unwrap_or(entry.name()));
+            let name = entry.name().map_err(zip_error)?;
+            if std::str::from_utf8(entry.name_raw()).ok() != Some(name.as_ref()) { return Err(invalid("Non-UTF-8 ZIP entry names are unsupported")); }
+            let uri = format!("/{}", name.strip_suffix('/').unwrap_or(name.as_ref()));
             part_uri(&uri)?;
             if names.insert(uri.to_ascii_lowercase(), uri).is_some() { return Err(invalid("Duplicate/equivalent OPC part names are forbidden")); }
             if entry.size() > MAX_PART { return Err(invalid("ZIP entry exceeds the 256 MiB uncompressed limit")); }
@@ -249,7 +250,7 @@ impl PackageData {
         // Directories are ZIP records, not OPC parts; preserve them only as raw entries.
         for i in 0..archive.len() {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
-            if entry.is_dir() { names.remove(&format!("/{}", entry.name().trim_end_matches('/')).to_ascii_lowercase()); }
+            if entry.is_dir() { names.remove(&format!("/{}", entry.name().map_err(zip_error)?.trim_end_matches('/')).to_ascii_lowercase()); }
         }
         let mut package = Self {
             original,
@@ -311,7 +312,13 @@ impl PackageData {
                     continue;
                 }
             };
-            let uri = format!("/{}", entry.name());
+            let uri = match entry.name() {
+                Ok(name) => format!("/{name}"),
+                Err(e) => {
+                    errors.push((format!("ZIP entry {index}"), e.to_string()));
+                    continue;
+                }
+            };
             if self.changes.contains_key(&uri) || self.loaded.contains_key(&uri) { continue; }
             let expected = entry.size();
             match std::io::copy(&mut (&mut entry).take(expected + 1), &mut std::io::sink()) {
@@ -419,7 +426,7 @@ impl PackageData {
         let (mut total, mut count) = (0_u64, 0);
         for i in 0..archive.len() {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
-            let size = match self.changes.get(&format!("/{}", entry.name())) {
+            let size = match self.changes.get(&format!("/{}", entry.name().map_err(zip_error)?)) {
                 Some(Some(data)) => data.len() as u64,
                 Some(None) => continue,
                 None => entry.size(),
@@ -441,7 +448,7 @@ impl PackageData {
         let mut written = HashSet::new();
         for i in 0..archive.len() {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
-            let name = format!("/{}", entry.name());
+            let name = format!("/{}", entry.name().map_err(zip_error)?);
             if let Some(change) = self.changes.get(&name) {
                 if let Some(data) = change {
                     let options = entry.options();
