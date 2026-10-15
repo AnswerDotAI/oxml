@@ -1,12 +1,7 @@
 //! Comment bodies, anchors and modern reply metadata over the same native package.
 use crate::{
-    error::{Error, Result},
-    package::{Package, PackageData},
-    package_schema::{declared_uri, story_nodes},
-    revisions::timestamp,
-    schema::{insertion_position, schema},
-    text::{self, Range, Story, View, W, W14},
-    xml::{Document, Element, Name, NodeKind, Xml},
+    error::{Error, Result}, package::{Package, PackageData}, package_schema::{declared_uri, story_nodes}, revisions::timestamp,
+    schema::{insertion_position, schema}, text::{self, Range, Story, View, W, W14}, xml::{Document, Element, Name, NodeKind, Xml}
 };
 use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -19,9 +14,7 @@ fn number(value: Option<&str>) -> Result<i64> { value.unwrap_or("").parse().map_
 fn last(doc: &Document, id: usize) -> Option<usize> { doc.descendants(id).ok()?.filter(|&n| text::name(doc, n) == Some("p")).last() }
 fn para_key(doc: &Document, id: usize) -> String { last(doc, id).and_then(|p| attr(doc, p, W14, "paraId")).unwrap_or("").to_uppercase() }
 fn next_id(values: impl IntoIterator<Item = String>, hex: bool) -> Result<String> {
-    let used = values
-        .into_iter()
-        .map(|v| i64::from_str_radix(&v, if hex { 16 } else { 10 }).map_err(|_| invalid("Invalid comment linkage ID")))
+    let used = values.into_iter().map(|v| i64::from_str_radix(&v, if hex { 16 } else { 10 }).map_err(|_| invalid("Invalid comment linkage ID")))
         .collect::<Result<HashSet<_>>>()?;
     let value = (if hex { 1 } else { 0 }..).find(|i| !used.contains(i)).unwrap();
     if hex && value >= 0x80000000 { return Err(invalid("No available paragraph/durable ID")); }
@@ -29,11 +22,8 @@ fn next_id(values: impl IntoIterator<Item = String>, hex: bool) -> Result<String
 }
 fn element(prefix: &str, local: &str, attributes: &[(&str, &str)]) -> Result<Document> {
     let uri = ns(prefix);
-    let mut doc = Document::from_element(Element {
-        name: Name { uri: uri.into(), local: local.into(), prefix: prefix.into() },
-        attributes: Vec::new(),
-        namespaces: vec![("".into(), "".into()), ("xml".into(), text::XML.into()), (prefix.into(), uri.into())],
-    });
+    let mut doc = Document::from_element(Element { name: Name { uri: uri.into(), local: local.into(), prefix: prefix.into() }, attributes: Vec::new(),
+        namespaces: vec![("".into(), "".into()), ("xml".into(), text::XML.into()), (prefix.into(), uri.into())] });
     for &(local, value) in attributes { doc.set_attribute(doc.root, uri, local, value, Some(prefix))?; }
     Ok(doc)
 }
@@ -320,24 +310,15 @@ impl Comment {
         if key.is_empty() { return Ok(Vec::new()); }
         let children = {
             let doc = xml.read()?;
-            doc.node(doc.root)?
-                .children
-                .iter()
-                .filter_map(|&id| {
-                    attr(&doc, id, ns("w15"), "paraIdParent")
-                        .filter(|p| p.eq_ignore_ascii_case(&key))
-                        .map(|_| attr(&doc, id, ns("w15"), "paraId").unwrap_or("").to_uppercase())
-                })
-                .collect::<HashSet<_>>()
+            doc.node(doc.root)?.children.iter().filter_map(|&id| {
+                attr(&doc, id, ns("w15"), "paraIdParent").filter(|p| p.eq_ignore_ascii_case(&key))
+                    .map(|_| attr(&doc, id, ns("w15"), "paraId").unwrap_or("").to_uppercase())
+            }).collect::<HashSet<_>>()
         };
-        self.comments
-            .items()?
-            .into_iter()
-            .filter_map(|c| {
-                let matches = c.xml.read().map(|doc| children.contains(&para_key(&doc, c.element)));
-                match matches { Ok(true) => Some(Ok(c)), Ok(false) => None, Err(e) => Some(Err(e)) }
-            })
-            .collect()
+        self.comments.items()?.into_iter().filter_map(|c| {
+            let matches = c.xml.read().map(|doc| children.contains(&para_key(&doc, c.element)));
+            match matches { Ok(true) => Some(Ok(c)), Ok(false) => None, Err(e) => Some(Err(e)) }
+        }).collect()
     }
     #[getter]
     pub fn resolved(&self) -> Result<bool> {
@@ -363,7 +344,10 @@ impl Comment {
             };
             append(&roots.ensure(&mut *self.comments.package.lock()?, 1)?, &element("w15", "commentEx", &[("paraId", &id)])?)?
         };
-        roots.0[1].as_ref().unwrap().edit(|doc| { doc.set_attribute_ns(record, ns("w15"), "done", if value { "1" } else { "0" }, "w15")?; Ok(()) })
+        roots.0[1].as_ref().unwrap().edit(|doc| {
+            doc.set_attribute_ns(record, ns("w15"), "done", if value { "1" } else { "0" }, "w15")?;
+            Ok(())
+        })
     }
     #[pyo3(signature=(text,author,initials="",date=None))]
     pub fn reply(&self, text: &str, author: &str, initials: &str, date: Option<&str>) -> Result<Comment> {
@@ -443,11 +427,8 @@ impl Comment {
                 let reference = text::name(doc, id) == Some("commentReference");
                 doc.remove(id)?;
                 if let Some(parent) = parent {
-                    if reference
-                        && text::name(doc, parent) == Some("r")
-                        && doc.node(parent)?.children.is_empty()
-                        && doc.node(parent)?.element().unwrap().attributes.is_empty()
-                    { doc.remove(parent)?; }
+                    if reference && text::name(doc, parent) == Some("r") && doc.node(parent)?.children.is_empty()
+                        && doc.node(parent)?.element().unwrap().attributes.is_empty() { doc.remove(parent)?; }
                 }
             }
             Ok(())

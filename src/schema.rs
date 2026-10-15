@@ -45,46 +45,30 @@ type FacadeType = (&'static str, &'static str, &'static str, bool, Vec<FacadeAtt
 
 #[pyfunction]
 pub fn facade_enums() -> Vec<FacadeEnum> {
-    schema()["enums"]
-        .as_object()
-        .unwrap()
-        .values()
-        .map(|e| {
-            let prefix = s(&e["Type"]).split(':').next().unwrap_or("");
-            let members = arr(&e["Facets"]).iter().map(|f| (f["Name"].as_str().filter(|n| !n.is_empty()).unwrap_or(s(&f["Value"])), s(&f["Value"]))).collect();
-            (s(&e["full_name"]), prefix, s(&e["Name"]), members)
-        })
-        .collect()
+    schema()["enums"].as_object().unwrap().values().map(|e| {
+        let prefix = s(&e["Type"]).split(':').next().unwrap_or("");
+        let members = arr(&e["Facets"]).iter().map(|f| (f["Name"].as_str().filter(|n| !n.is_empty()).unwrap_or(s(&f["Value"])), s(&f["Value"]))).collect();
+        (s(&e["full_name"]), prefix, s(&e["Name"]), members)
+    }).collect()
 }
 
 #[pyfunction]
 pub fn facade_types() -> Vec<FacadeType> {
-    schema()["types"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(_, t)| !t["is_abstract"].as_bool().unwrap_or(false))
-        .map(|(id, t)| {
-            let prefix = qname(id).split(':').next().unwrap_or("");
-            let attrs = arr(&t["attributes"]).iter().map(|a| (s(&a["PropertyName"]), s(&a["Type"]))).collect();
-            (id.as_str(), prefix, s(&t["class_name"]), t["is_text"].as_bool().unwrap_or(false), attrs)
-        })
-        .collect()
+    schema()["types"].as_object().unwrap().iter().filter(|(_, t)| !t["is_abstract"].as_bool().unwrap_or(false)).map(|(id, t)| {
+        let prefix = qname(id).split(':').next().unwrap_or("");
+        let attrs = arr(&t["attributes"]).iter().map(|a| (s(&a["PropertyName"]), s(&a["Type"]))).collect();
+        (id.as_str(), prefix, s(&t["class_name"]), t["is_text"].as_bool().unwrap_or(false), attrs)
+    }).collect()
 }
 
 type QName = (&'static str, &'static str);
 
 #[derive(Default)]
 struct SchemaIndex {
-    roots: HashMap<QName, Option<&'static str>>,
-    root_candidates: HashMap<QName, Vec<&'static str>>,
-    children: HashMap<&'static str, HashMap<QName, Option<&'static str>>>,
-    semantics: HashMap<QName, Vec<(usize, &'static Value)>>,
-    element_versions: HashMap<QName, u8>,
-    namespace_versions: HashMap<&'static str, u8>,
-    enums: HashMap<&'static str, &'static Value>,
-    particles: HashMap<&'static str, Particle>,
-    child_order: HashMap<&'static str, HashMap<QName, usize>>,
+    roots: HashMap<QName, Option<&'static str>>, root_candidates: HashMap<QName, Vec<&'static str>>,
+    children: HashMap<&'static str, HashMap<QName, Option<&'static str>>>, semantics: HashMap<QName, Vec<(usize, &'static Value)>>,
+    element_versions: HashMap<QName, u8>, namespace_versions: HashMap<&'static str, u8>, enums: HashMap<&'static str, &'static Value>,
+    particles: HashMap<&'static str, Particle>, child_order: HashMap<&'static str, HashMap<QName, usize>>
 }
 
 fn schema_index() -> &'static SchemaIndex {
@@ -106,10 +90,7 @@ fn schema_index() -> &'static SchemaIndex {
         }
         for (name, ids) in &index.root_candidates {
             let modelled: Vec<&'static str> = ids.iter().copied().filter(|id| index.child_order.contains_key(id)).collect();
-            index.roots.insert(
-                *name,
-                if ids.len() == 1 { Some(ids[0]) } else if modelled.len() == 1 { Some(modelled[0]) } else { None },
-            );
+            index.roots.insert(*name, if ids.len() == 1 { Some(ids[0]) } else if modelled.len() == 1 { Some(modelled[0]) } else { None });
         }
         for (i, rule) in arr(&schema()["semantics"]).iter().enumerate() { index.semantics.entry(expanded(s(&rule["Context"]))).or_default().push((i, rule)); }
         for definition in schema()["enums"].as_object().unwrap().values() { index.enums.insert(s(&definition["full_name"]), definition); }
@@ -173,20 +154,15 @@ pub(crate) fn setting_attribute(name: &str) -> Result<&'static Value> {
 /// Builder coercions come from enum values, not SDK type-name conventions.
 #[pyfunction]
 pub fn on_off_attributes() -> Vec<(&'static str, &'static str)> {
-    schema()["types"]
-        .as_object()
-        .unwrap()
-        .values()
-        .flat_map(|t| {
-            arr(&t["attributes"]).iter().filter_map(move |a| {
-                let kind = s(&a["Type"]).strip_prefix("EnumValue<")?.strip_suffix('>')?;
-                let e = schema_index().enums.get(kind)?;
-                let facets = arr(&e["Facets"]);
-                (facets.len() == 2 && facets.iter().any(|f| f["Value"] == "on") && facets.iter().any(|f| f["Value"] == "off"))
-                    .then(|| (s(&t["qname"]), s(&a["QName"])))
-            })
+    schema()["types"].as_object().unwrap().values().flat_map(|t| {
+        arr(&t["attributes"]).iter().filter_map(move |a| {
+            let kind = s(&a["Type"]).strip_prefix("EnumValue<")?.strip_suffix('>')?;
+            let e = schema_index().enums.get(kind)?;
+            let facets = arr(&e["Facets"]);
+            (facets.len() == 2 && facets.iter().any(|f| f["Value"] == "on") && facets.iter().any(|f| f["Value"] == "off"))
+                .then(|| (s(&t["qname"]), s(&a["QName"])))
         })
-        .collect()
+    }).collect()
 }
 
 #[pyfunction]
@@ -303,11 +279,7 @@ pub fn reorder(doc: &mut Document, parent: usize, deep: bool, strict: bool) -> R
     let ids: Vec<usize> = if deep { doc.descendants(parent)?.collect() } else { vec![parent] };
     for id in ids {
         match ranked(doc, id)? {
-            Some(ranks) => {
-                sort_children(doc, id, ranks)?;
-            }
-            None if strict && id == parent => return Err(Error::Invalid(unranked(doc, parent)?)),
-            None => (),
+            Some(ranks) => { sort_children(doc, id, ranks)?; } None if strict && id == parent => return Err(Error::Invalid(unranked(doc, parent)?)), None => ()
         }
     }
     Ok(())
@@ -335,20 +307,11 @@ fn pattern(pattern: &str, value: &str, gaps: &mut BTreeSet<String>) -> bool {
         if pattern.contains("-[") { return None; } // .NET character-class subtraction differs in Rust.
         regex::Regex::new(&format!(r"\A(?:{pattern})\z")).ok()
     });
-    match regex {
-        Some(regex) => regex.is_match(value),
-        None => {
-            gaps.insert(format!("pattern:{pattern}"));
-            true
-        }
-    }
+    match regex { Some(regex) => regex.is_match(value), None => { gaps.insert(format!("pattern:{pattern}")); true } }
 }
 
 fn base64(value: &str) -> Option<Vec<u8>> {
-    use base64::{
-        engine::general_purpose::{GeneralPurpose, PAD},
-        Engine,
-    };
+    use base64::{engine::general_purpose::{GeneralPurpose, PAD}, Engine};
     // Convert.FromBase64String accepts XML whitespace and nonzero unused trailing bits.
     let engine = GeneralPurpose::new(&base64::alphabet::STANDARD, PAD.with_decode_allow_trailing_bits(true));
     engine.decode(value.bytes().filter(|c| !matches!(c, b' ' | b'\t' | b'\r' | b'\n')).collect::<Vec<_>>()).ok()
@@ -394,11 +357,8 @@ fn datetime(value: &str, gaps: &mut BTreeSet<String>) -> bool {
 pub(crate) fn boolean(kind: &str, value: &str) -> Option<bool> {
     let value = match kind { "BooleanValue" => value.trim_matches([' ', '\t', '\r', '\n']), "OnOffValue" => value, _ => return None };
     match value {
-        "true" | "1" => Some(true),
-        "false" | "0" => Some(false),
-        "on" if kind == "OnOffValue" => Some(true),
-        "off" if kind == "OnOffValue" => Some(false),
-        _ => None,
+        "true" | "1" => Some(true), "false" | "0" => Some(false), "on" if kind == "OnOffValue" => Some(true), "off" if kind == "OnOffValue" => Some(false),
+        _ => None
     }
 }
 
@@ -434,30 +394,23 @@ fn lexical(kind: &str, value: &str, gaps: &mut BTreeSet<String>) -> bool {
                     if arr(&e["Facets"]).iter().any(|f| f.get("Version").is_some()) { gaps.insert(format!("enum-facet-version:{name}")); }
                     arr(&e["Facets"]).iter().any(|f| s(&f["Value"]) == value)
                 }
-                None => {
-                    gaps.insert(format!("enum-source:{name}"));
-                    true
-                }
+                None => { gaps.insert(format!("enum-source:{name}")); true }
             }
         }
-        _ => {
-            gaps.insert(format!("lexical:{kind}"));
-            true
-        }
+        _ => { gaps.insert(format!("lexical:{kind}")); true }
     }
 }
 
 fn validator(v: &Value, value: &str, kind: &str, gaps: &mut BTreeSet<String>) -> bool {
     let name = s(&v["Name"]);
     let override_type = s(&v["Type"]);
-    let kind = if override_type.is_empty() { kind } else if let Some(kind) = schema()["simple_types"][override_type].as_str() { kind } else if name == "EnumValidator" {
+    let kind = if override_type.is_empty() { kind }
+    else if let Some(kind) = schema()["simple_types"][override_type].as_str() { kind }
+    else if name == "EnumValidator" {
         if let Some(e) = schema()["enums"].get(override_type) { return arr(&e["Facets"]).iter().any(|f| s(&f["Value"]) == value); }
         gaps.insert(format!("validator-type:{override_type}"));
         return true;
-    } else {
-        gaps.insert(format!("validator-type:{override_type}"));
-        return true;
-    };
+    } else { gaps.insert(format!("validator-type:{override_type}")); return true; };
     if v["IsList"].as_bool().unwrap_or(false) {
         if !lexical(&format!("ListValue<{kind}>"), value, gaps) { return false; }
         if !arr(&v["Arguments"]).is_empty() { gaps.insert(format!("list-facets:{name}")); }
@@ -469,31 +422,22 @@ fn validator(v: &Value, value: &str, kind: &str, gaps: &mut BTreeSet<String>) ->
         return true;
     }
     // SDK TryGetValue applies bounds only to numeric primitives, not booleans, decimals or dates.
-    if name == "NumberValidator"
-        && !matches!(
-            kind,
-            "ByteValue"
-                | "SByteValue"
-                | "Int16Value"
-                | "UInt16Value"
-                | "Int32Value"
-                | "UInt32Value"
-                | "Int64Value"
-                | "UInt64Value"
-                | "IntegerValue"
-                | "DoubleValue"
-                | "SingleValue"
-        )
-    { return true; }
+    if name == "NumberValidator" && !matches!(
+        kind, "ByteValue" | "SByteValue" | "Int16Value" | "UInt16Value" | "Int32Value" | "UInt32Value" | "Int64Value" | "UInt64Value" | "IntegerValue"
+            | "DoubleValue" | "SingleValue"
+    ) { return true; }
     let number = value.trim_matches([' ', '\t', '\r', '\n']);
     arr(&v["Arguments"]).iter().all(|a| {
         let key = s(&a["Name"]);
         let val = s(&a["Value"]);
         let bound = val.parse::<i128>().ok();
         let compare = |b: i128| {
-            if matches!(kind, "DoubleValue" | "SingleValue") { float(number, kind == "SingleValue").and_then(|n| n.partial_cmp(&(b as f64))) } else { number.parse::<i128>().ok().map(|n| n.cmp(&b)) }
+            if matches!(kind, "DoubleValue" | "SingleValue") { float(number, kind == "SingleValue").and_then(|n| n.partial_cmp(&(b as f64))) }
+            else { number.parse::<i128>().ok().map(|n| n.cmp(&b)) }
         };
-        let length = if kind == "HexBinaryValue" { value.len() / 2 } else if kind == "Base64BinaryValue" { base64(value).map_or(0, |b| b.len()) } else { value.encode_utf16().count() } as i128;
+        let length = if kind == "HexBinaryValue" { value.len() / 2 }
+        else if kind == "Base64BinaryValue" { base64(value).map_or(0, |b| b.len()) }
+        else { value.encode_utf16().count() } as i128;
         use std::cmp::Ordering::{Equal, Greater, Less};
         match (key, bound) {
             ("MinInclusive", Some(b)) => matches!(compare(b), Some(Equal | Greater)),
@@ -517,10 +461,7 @@ fn validator(v: &Value, value: &str, kind: &str, gaps: &mut BTreeSet<String>) ->
                 val.eq_ignore_ascii_case("false")
                     || !value.starts_with(' ') && !value.ends_with(' ') && !value.contains("  ") && !value.contains(['\t', '\n', '\r'])
             }
-            _ => {
-                gaps.insert(format!("facet:{name}.{key}"));
-                true
-            }
+            _ => { gaps.insert(format!("facet:{name}.{key}")); true }
         }
     })
 }
@@ -553,12 +494,10 @@ fn check_attr(a: &Value, value: Option<&str>, target: &str, gaps: &mut BTreeSet<
     let mut validators = arr(&a["Validators"]).iter().filter(|v| applicable(v, target));
     let mut errors = Vec::new();
     if value.is_none() {
-        if available(s(&a["Version"]), target)
-            && validators.any(|v| {
-                s(&v["Name"]) == "RequiredValidator"
-                    && !arr(&v["Arguments"]).iter().any(|arg| s(&arg["Name"]) == "IsRequired" && s(&arg["Value"]).eq_ignore_ascii_case("false"))
-            })
-        { errors.push("required".into()); }
+        if available(s(&a["Version"]), target) && validators.any(|v| {
+            s(&v["Name"]) == "RequiredValidator"
+                && !arr(&v["Arguments"]).iter().any(|arg| s(&arg["Name"]) == "IsRequired" && s(&arg["Value"]).eq_ignore_ascii_case("false"))
+        }) { errors.push("required".into()); }
         return errors;
     }
     let value = value.unwrap();
@@ -589,10 +528,7 @@ pub fn typed_attribute(xml: &Xml, id: usize, type_id: &str, property: &str) -> R
     let a = typed_descriptor(type_id, property)?;
     let Some(value) = attribute(doc.node(id)?, s(&a["QName"])) else { return Ok(None); };
     checked_attribute(a, property, value, false)?;
-    Ok(Some(
-        match boolean(s(&a["Type"]), value) { Some(true) => "true", Some(false) => "false", None => value }
-        .into(),
-    ))
+    Ok(Some(match boolean(s(&a["Type"]), value) { Some(true) => "true", Some(false) => "false", None => value }.into()))
 }
 
 #[pyfunction]
@@ -612,21 +548,11 @@ fn particle_occurs(p: &Value, target: &str) -> Option<(usize, usize)> {
     let occurs = arr(&p["Occurs"]);
     if occurs.is_empty() { return available(s(&p["InitialVersion"]), target).then_some((1, 1)); }
     let target_rank = rank(target)?;
-    occurs
-        .iter()
-        .filter(|o| version(o).is_some_and(|v| v <= target_rank))
-        .max_by_key(|o| version(o))
+    occurs.iter().filter(|o| version(o).is_some_and(|v| v <= target_rank)).max_by_key(|o| version(o))
         .map(|o| (o["Min"].as_u64().unwrap_or(0) as usize, o["Max"].as_u64().unwrap_or(0) as usize))
 }
 
-enum Term {
-    Element(&'static str),
-    Sequence(Vec<Particle>),
-    Choice(Vec<Particle>),
-    Any(&'static str),
-    All(Vec<Particle>),
-    Unsupported(&'static str),
-}
+enum Term { Element(&'static str), Sequence(Vec<Particle>), Choice(Vec<Particle>), Any(&'static str), All(Vec<Particle>), Unsupported(&'static str) }
 
 struct Particle { occurs: [Option<(usize, usize)>; 7], require_filter: bool, term: Term }
 
@@ -641,11 +567,8 @@ impl Particle {
         let items = || arr(&p["Items"]).iter().map(Self::compile).collect();
         let term = if let Some(name) = p["Name"].as_str() { Term::Element(name) } else {
             match s(&p["Kind"]) {
-                "Sequence" | "Group" => Term::Sequence(items()),
-                "Choice" => Term::Choice(items()),
-                "All" => Term::All(items()),
-                "Any" => Term::Any(s(&p["Namespace"])),
-                other => Term::Unsupported(other),
+                "Sequence" | "Group" => Term::Sequence(items()), "Choice" => Term::Choice(items()), "All" => Term::All(items()),
+                "Any" => Term::Any(s(&p["Namespace"])), other => Term::Unsupported(other)
             }
         };
         Self { occurs: std::array::from_fn(|i| particle_occurs(p, VERSIONS[i])), require_filter: p["RequireFilter"].as_bool().unwrap_or(false), term }
@@ -653,10 +576,7 @@ impl Particle {
 
     // Same bounded matcher, over immutable compiled descriptors and contiguous position sets.
     fn matches(&self, children: &[(&str, &str)], start: usize, parent_uri: &str, target: usize, gaps: &mut BTreeSet<String>, budget: &mut usize) -> Vec<usize> {
-        if *budget == 0 {
-            gaps.insert("particle:budget".into());
-            return Vec::new();
-        }
+        if *budget == 0 { gaps.insert("particle:budget".into()); return Vec::new(); }
         *budget -= 1;
         let Some((min, max)) = self.occurs[target] else { return vec![start]; };
         if self.require_filter { gaps.insert("particle:RequireFilter".into()); }
@@ -668,9 +588,7 @@ impl Particle {
             let mut next = Vec::new();
             for &pos in &current {
                 match &self.term {
-                    Term::Element(name) => {
-                        if children.get(pos).is_some_and(|(id, _)| id == name) { next.push(pos + 1); }
-                    }
+                    Term::Element(name) => { if children.get(pos).is_some_and(|(id, _)| id == name) { next.push(pos + 1); } }
                     Term::Sequence(items) => {
                         let mut matched = vec![pos];
                         for item in items {
@@ -678,20 +596,12 @@ impl Particle {
                         }
                         next.extend(matched);
                     }
-                    Term::Choice(items) => {
-                        for item in items { next.extend(item.matches(children, pos, parent_uri, target, gaps, budget)); }
-                    }
+                    Term::Choice(items) => { for item in items { next.extend(item.matches(children, pos, parent_uri, target, gaps, budget)); } }
                     Term::Any(namespace) => {
                         if let Some((_, uri)) = children.get(pos) {
                             let matches = match *namespace {
-                                "" | "##any" => true,
-                                "##local" => uri.is_empty(),
-                                "##other" => uri.is_empty() || *uri != parent_uri,
-                                "##targetNamespace" => *uri == parent_uri,
-                                other => {
-                                    gaps.insert(format!("particle:namespace:{other}"));
-                                    false
-                                }
+                                "" | "##any" => true, "##local" => uri.is_empty(), "##other" => uri.is_empty() || *uri != parent_uri,
+                                "##targetNamespace" => *uri == parent_uri, other => { gaps.insert(format!("particle:namespace:{other}")); false }
                             };
                             if matches { next.push(pos + 1); }
                         }
@@ -700,29 +610,19 @@ impl Particle {
                         let mut members = HashMap::new();
                         for item in items {
                             let Some((min, max)) = item.occurs[target] else { continue; };
-                            if let Term::Element(name) = item.term {
-                                if min <= 1 && max == 1 {
-                                    members.insert(name, min);
-                                    continue;
-                                }
-                            }
+                            if let Term::Element(name) = item.term { if min <= 1 && max == 1 { members.insert(name, min); continue; } }
                             gaps.insert("particle:all-member".into());
                         }
                         let mut seen = HashSet::new();
                         if members.values().all(|min| *min == 0) { next.push(pos); }
                         for (offset, (id, _)) in children[pos..].iter().enumerate() {
-                            if *budget == 0 {
-                                gaps.insert("particle:budget".into());
-                                break;
-                            }
+                            if *budget == 0 { gaps.insert("particle:budget".into()); break; }
                             *budget -= 1;
                             if !members.contains_key(id) || !seen.insert(*id) { break; }
                             if members.iter().all(|(name, min)| *min == 0 || seen.contains(name)) { next.push(pos + offset + 1); }
                         }
                     }
-                    Term::Unsupported(kind) => {
-                        gaps.insert(format!("particle:{kind}"));
-                    }
+                    Term::Unsupported(kind) => { gaps.insert(format!("particle:{kind}")); }
                 }
             }
             let next = positions(next);
@@ -736,13 +636,11 @@ impl Particle {
 
 pub(crate) fn ignorable(doc: &Document, id: usize, uri: &str) -> bool {
     if uri.is_empty() { return false; }
-    ancestors(doc, id)
-        .filter_map(Node::element)
+    ancestors(doc, id).filter_map(Node::element)
         .any(|a| a.attribute(MC, "Ignorable").is_some_and(|v| v.split_whitespace().any(|prefix| a.namespace(prefix) == Some(uri))))
 }
 pub(crate) fn namespace_available(uri: &str, target: &str) -> bool {
-    uri == MC
-        || uri == "http://www.w3.org/XML/1998/namespace"
+    uri == MC || uri == "http://www.w3.org/XML/1998/namespace"
         || schema_index().namespace_versions.get(uri).is_some_and(|version| Some(*version) <= rank(target))
 }
 fn process_content(doc: &Document, id: usize) -> bool {
@@ -771,10 +669,9 @@ fn mc_validate(doc: &Document, id: usize, issues: &mut Vec<Value>) {
     let local_ignorable: Vec<_> = e.attribute(MC, "Ignorable").unwrap_or("").split_whitespace().filter_map(defined).collect();
     for name in ["PreserveElements", "PreserveAttributes", "ProcessContent"] {
         if let Some(value) = e.attribute(MC, name).filter(|v| !v.is_empty()) {
-            let valid = !local_ignorable.is_empty()
-                && value.split_whitespace().all(|q| {
-                    q.split_once(':').is_some_and(|(prefix, local)| !local.contains(':') && defined(prefix).is_some_and(|uri| local_ignorable.contains(&uri)))
-                });
+            let valid = !local_ignorable.is_empty() && value.split_whitespace().all(|q| {
+                q.split_once(':').is_some_and(|(prefix, local)| !local.contains(':') && defined(prefix).is_some_and(|uri| local_ignorable.contains(&uri)))
+            });
             if !valid {
                 issues.push(issue(&format!("mc-{name}"), "markup-compatibility", id, "QNames in this element's Ignorable namespaces", value, &provenance));
             }
@@ -785,13 +682,7 @@ fn mc_validate(doc: &Document, id: usize, issues: &mut Vec<Value>) {
         let xml_space = a.name.uri == "http://www.w3.org/XML/1998/namespace" && ["lang", "space"].contains(&a.name.local.as_str());
         if xml_space && (wrapper || e.attribute(MC, "ProcessContent").is_some_and(|v| !v.is_empty())) {
             issues.push(issue(
-                "mc-xml-attribute",
-                "markup-compatibility",
-                id,
-                "no xml:lang/xml:space on MC or ProcessContent host",
-                a.name.local.as_str(),
-                &provenance,
-            ));
+                "mc-xml-attribute", "markup-compatibility", id, "no xml:lang/xml:space on MC or ProcessContent host", a.name.local.as_str(), &provenance));
         }
         if wrapper && a.name.uri.is_empty() && !(e.name.local == "Choice" && a.name.local == "Requires") {
             issues.push(issue("mc-unprefixed-attribute", "markup-compatibility", id, "prefixed MC attributes", a.name.local.as_str(), &provenance));
@@ -825,13 +716,7 @@ fn mc_validate(doc: &Document, id: usize, issues: &mut Vec<Value>) {
         }
         if !valid || choices == 0 {
             issues.push(issue(
-                "mc-content",
-                "markup-compatibility",
-                id,
-                "one or more Choices followed by at most one Fallback",
-                "invalid branch sequence",
-                &provenance,
-            ));
+                "mc-content", "markup-compatibility", id, "one or more Choices followed by at most one Fallback", "invalid branch sequence", &provenance));
         }
     }
 }
@@ -844,30 +729,24 @@ pub(crate) fn effective(doc: &Document, id: usize, target: &str, skipped: &mut V
         if e.name.uri == MC && e.name.local == "AlternateContent" {
             mc_validate(doc, child, issues);
             let branches = children(doc, child);
-            let selected = branches
-                .iter()
-                .copied()
-                .find(|branch| {
+            let selected = branches.iter().copied().find(|branch| {
+                let b = doc.node(*branch).unwrap().element().unwrap();
+                b.name.uri == MC && b.name.local == "Choice" && b.attribute("", "Requires")
+                        .is_some_and(|v| v.split_whitespace().all(|prefix| b.namespace(prefix).is_some_and(|uri| namespace_available(uri, target))))
+            }).or_else(|| {
+                branches.into_iter().find(|branch| {
                     let b = doc.node(*branch).unwrap().element().unwrap();
-                    b.name.uri == MC
-                        && b.name.local == "Choice"
-                        && b.attribute("", "Requires")
-                            .is_some_and(|v| v.split_whitespace().all(|prefix| b.namespace(prefix).is_some_and(|uri| namespace_available(uri, target))))
+                    b.name.uri == MC && b.name.local == "Fallback"
                 })
-                .or_else(|| {
-                    branches.into_iter().find(|branch| {
-                        let b = doc.node(*branch).unwrap().element().unwrap();
-                        b.name.uri == MC && b.name.local == "Fallback"
-                    })
-                });
+            });
             skipped.push(json!({"reason":"unselected-mc-branches","node":child,
                 "selected":selected.map(|branch| &doc.node(branch).unwrap().element().unwrap().name.local)}));
             if let Some(branch) = selected { result.extend(effective(doc, branch, target, skipped, issues)); }
         } else if ignorable(doc, child, &e.name.uri)
-            && !schema_index().element_versions.get(&(e.name.uri.as_str(), e.name.local.as_str())).is_some_and(|version| Some(*version) <= rank(target))
-        {
-            if process_content(doc, child) { result.extend(effective(doc, child, target, skipped, issues)); } else { skipped.push(json!({"reason":"ignorable-unknown","node":child})); }
-        } else { result.push(child); }
+            && !schema_index().element_versions.get(&(e.name.uri.as_str(), e.name.local.as_str())).is_some_and(|version| Some(*version) <= rank(target)) {
+                if process_content(doc, child) { result.extend(effective(doc, child, target, skipped, issues)); }
+                else { skipped.push(json!({"reason":"ignorable-unknown","node":child})); }
+            } else { result.push(child); }
     }
     result
 }
@@ -888,13 +767,8 @@ fn path_nodes(doc: &Document, path: &str, target: &str) -> Vec<usize> {
 }
 
 struct SemanticContext<'a> {
-    doc: &'a Document,
-    dependencies: &'a HashMap<String, &'a Document>,
-    relationships: Option<&'a HashMap<String, String>>,
-    complete_dependencies: bool,
-    target: &'a str,
-    duplicates: HashMap<String, BTreeSet<String>>,
-    references: HashMap<&'static str, HashSet<String>>,
+    doc: &'a Document, dependencies: &'a HashMap<String, &'a Document>, relationships: Option<&'a HashMap<String, String>>, complete_dependencies: bool,
+    target: &'a str, duplicates: HashMap<String, BTreeSet<String>>, references: HashMap<&'static str, HashSet<String>>
 }
 
 fn semantic(rule: &'static Value, n: &Node, context: &mut SemanticContext<'_>, gaps: &mut BTreeSet<String>) -> Option<bool> {
@@ -924,10 +798,7 @@ fn semantic(rule: &'static Value, n: &Node, context: &mut SemanticContext<'_>, g
         let (attr, expected) = rest.split_once("]/@Type = '")?;
         let expected = expected.strip_suffix('\'')?;
         let Some(value) = attribute(n, attr).filter(|v| !v.is_empty()) else { return Some(true); };
-        let Some(relationships) = context.relationships else {
-            gaps.insert("relationships".into());
-            return None;
-        };
+        let Some(relationships) = context.relationships else { gaps.insert("relationships".into()); return None; };
         return Some(relationships.get(value).is_some_and(|actual| actual == expected));
     }
     // Recognize the imported cross-part lookup grammar, not individual Word reference IDs.
@@ -942,20 +813,14 @@ fn semantic(rule: &'static Value, n: &Node, context: &mut SemanticContext<'_>, g
         return None;
     };
     let values = context.references.entry(test).or_insert_with(|| {
-        path_nodes(doc, path, context.target)
-            .into_iter()
-            .filter_map(|id| attribute(doc.node(id).unwrap(), dest).filter(|v| !v.is_empty()).map(str::to_owned))
+        path_nodes(doc, path, context.target).into_iter().filter_map(|id| attribute(doc.node(id).unwrap(), dest).filter(|v| !v.is_empty()).map(str::to_owned))
             .collect()
     });
     Some(values.contains(value))
 }
 
 pub fn analyze_document(
-    doc: &Document,
-    target: &str,
-    dependencies: &HashMap<String, &Document>,
-    relationships: Option<&HashMap<String, String>>,
-    complete_dependencies: bool,
+    doc: &Document, target: &str, dependencies: &HashMap<String, &Document>, relationships: Option<&HashMap<String, String>>, complete_dependencies: bool
 ) -> Result<Value> {
     check_target(target)?;
     let mut issues = Vec::new();
@@ -973,10 +838,7 @@ pub fn analyze_document(
         let children = effective(doc, index, target, &mut skipped, &mut issues);
         let child_types: Vec<_> = children.iter().map(|c| resolve(doc.node(*c).unwrap(), id.as_deref())).collect();
         active.extend(children.iter().copied().zip(child_types.iter().cloned()));
-        let Some(id) = id else {
-            gaps.insert(format!("untyped:{{{}}}{}", e.name.uri, e.name.local));
-            continue;
-        };
+        let Some(id) = id else { gaps.insert(format!("untyped:{{{}}}{}", e.name.uri, e.name.local)); continue; };
         let t = &schema()["types"][&id];
         checked += 1;
         if !t["unresolved_base"].is_null() { gaps.insert(format!("source-base:{id}:{}", s(&t["unresolved_base"]))); }
@@ -997,31 +859,25 @@ pub fn analyze_document(
             }
             if a.name.uri == "http://www.w3.org/XML/1998/namespace" || ignorable(doc, index, &a.name.uri) { continue; }
             if !arr(&t["attributes"]).iter().any(|v| expanded(s(&v["QName"])) == (a.name.uri.as_str(), a.name.local.as_str())) {
-                if !t["unresolved_base"].is_null() { gaps.insert(format!("undeclared-attribute:{id}:{{{}}}{}", a.name.uri, a.name.local)); } else { issues.push(issue("undeclared-attribute", "schema", index, "declared attribute", json!([a.name.uri, a.name.local]), &t["source"])); }
+                if !t["unresolved_base"].is_null() { gaps.insert(format!("undeclared-attribute:{id}:{{{}}}{}", a.name.uri, a.name.local)); } else {
+                    issues.push(issue("undeclared-attribute", "schema", index, "declared attribute", json!([a.name.uri, a.name.local]), &t["source"]));
+                }
             }
         }
         if let Some(p) = schema_index().particles.get(id) {
             let mut local = BTreeSet::new();
             let mut budget = 100_000;
-            let matching_children: Vec<_> = children
-                .iter()
-                .zip(&child_types)
-                .map(|(c, t)| (t.as_deref().unwrap_or(""), doc.node(*c).unwrap().element().unwrap().name.uri.as_str()))
-                .collect();
+            let matching_children: Vec<_> = children.iter().zip(&child_types)
+                .map(|(c, t)| (t.as_deref().unwrap_or(""), doc.node(*c).unwrap().element().unwrap().name.uri.as_str())).collect();
             let accepted = p.matches(&matching_children, 0, &e.name.uri, rank(target).unwrap() as usize, &mut local, &mut budget).contains(&children.len());
             if !accepted && local.is_empty() { issues.push(issue("child-particle", "schema", index, t["particle"].clone(), json!(child_types), &t["source"])); }
             gaps.extend(local);
-        }
-        else if !children.is_empty() {
+        } else if !children.is_empty() {
             if t["is_leaf"].as_bool().unwrap_or(false) && t["unresolved_base"].is_null() {
                 issues.push(issue("leaf-child", "schema", index, "no element children", json!(children), &t["source"]));
             } else { gaps.insert(format!("missing-content-model:{id}")); }
         }
-        let text: String = n
-            .children
-            .iter()
-            .filter_map(|id| match &doc.node(*id).unwrap().kind { NodeKind::Text(t) => Some(t.as_str()), _ => None })
-            .collect();
+        let text: String = n.children.iter().filter_map(|id| match &doc.node(*id).unwrap().kind { NodeKind::Text(t) => Some(t.as_str()), _ => None }).collect();
         for error in check_value("StringValue", arr(&t["validators"]), &text, target, &mut gaps) {
             issues.push(issue(&format!("element-{error}"), "schema", index, t["validators"].clone(), text.as_str(), &t["source"]));
         }
@@ -1032,11 +888,11 @@ pub fn analyze_document(
             match semantic(rule, n, &mut semantic_context, &mut gaps) {
                 Some(valid) => {
                     semantic_checked += 1;
-                    if !valid { issues.push(issue(&format!("sdk-schematron-{i}"), "semantic", index, s(&rule["Test"]), "constraint not satisfied", rule)); }
+                    if !valid {
+                        issues.push(issue(&format!("sdk-schematron-{i}"), "semantic", index, s(&rule["Test"]), "constraint not satisfied", rule));
+                    }
                 }
-                None => {
-                    gaps.insert(format!("semantic:sdk-schematron-{i}"));
-                }
+                None => { gaps.insert(format!("semantic:sdk-schematron-{i}")); }
             }
         }
     }
@@ -1046,11 +902,7 @@ pub fn analyze_document(
 }
 
 pub fn analyze_tree(
-    xml: &Xml,
-    target: &str,
-    dependencies: &HashMap<String, Xml>,
-    relationships: Option<&HashMap<String, String>>,
-    complete_dependencies: bool,
+    xml: &Xml, target: &str, dependencies: &HashMap<String, Xml>, relationships: Option<&HashMap<String, String>>, complete_dependencies: bool
 ) -> Result<Value> {
     let doc = xml.read()?;
     let guards = dependencies.iter().map(|(name, xml)| Ok((name, xml.read()?))).collect::<Result<Vec<_>>>()?;
@@ -1061,13 +913,8 @@ pub fn analyze_tree(
 #[pyfunction]
 #[pyo3(signature=(xml, target="Microsoft365", dependencies=None, relationships=None, complete_dependencies=false))]
 pub fn analyze(
-    py: Python<'_>,
-    xml: &Xml,
-    target: &str,
-    dependencies: Option<HashMap<String, PyRef<'_, Xml>>>,
-    relationships: Option<HashMap<String, String>>,
-    complete_dependencies: bool,
-) -> Result<String> {
+    py: Python<'_>, xml: &Xml, target: &str, dependencies: Option<HashMap<String, PyRef<'_, Xml>>>, relationships: Option<HashMap<String, String>>,
+    complete_dependencies: bool) -> Result<String> {
     let deps = dependencies.unwrap_or_default().into_iter().map(|(name, xml)| (name, (*xml).clone())).collect();
     py.detach(|| analyze_tree(xml, target, &deps, relationships.as_ref(), complete_dependencies).map(|report| report.to_string()))
 }

@@ -1,10 +1,5 @@
 //! Bookmark markers and hyperlink wrappers over native story ranges.
-use crate::{
-    error::{Error, Result},
-    package::{Package, Relationship},
-    text::{self, Range, Story, View, W},
-    xml::{self, Document, Xml},
-};
+use crate::{error::{Error, Result}, package::{Package, Relationship}, text::{self, Range, Story, View, W}, xml::{self, Document, Xml}};
 use pyo3::prelude::*;
 use std::collections::HashSet;
 
@@ -77,13 +72,10 @@ impl Bookmarks {
     pub fn items(&self) -> Result<Vec<Bookmark>> {
         let doc = self.story.xml.read()?;
         let nodes = doc.descendants(self.story.element)?;
-        Ok(nodes
-            .filter(|&id| {
-                text::name(&doc, id) == Some("bookmarkStart")
-                    && std::iter::successors(Some(id), |&id| doc.node(id).ok()?.parent).all(|id| self.story.view.includes(text::name(&doc, id).unwrap_or("")))
-            })
-            .map(|element| Bookmark { bookmarks: self.clone(), element })
-            .collect())
+        Ok(nodes.filter(|&id| {
+            text::name(&doc, id) == Some("bookmarkStart")
+                && std::iter::successors(Some(id), |&id| doc.node(id).ok()?.parent).all(|id| self.story.view.includes(text::name(&doc, id).unwrap_or("")))
+        }).map(|element| Bookmark { bookmarks: self.clone(), element }).collect())
     }
     pub fn find(&self, name: &str) -> Result<Option<Bookmark>> {
         let mut found = None;
@@ -119,8 +111,7 @@ impl Bookmarks {
     #[pyo3(signature=(name, text=None, switches=""))]
     pub fn reference(&self, name: &str, text: Option<&str>, switches: &str) -> Result<Xml> {
         let text = match text {
-            Some(s) => s.to_string(),
-            None => self.find(name)?.ok_or_else(|| Error::Missing(format!("No bookmark named {name}")))?.text()?,
+            Some(s) => s.to_string(), None => self.find(name)?.ok_or_else(|| Error::Missing(format!("No bookmark named {name}")))?.text()?
         };
         ref_field(name, &text, switches)
     }
@@ -186,8 +177,7 @@ impl Hyperlinks {
         if let Some(anchor) = target.strip_prefix('#') {
             name_value(anchor)?;
             link.set_attribute(link.root, W, "anchor", anchor, Some("w"))?;
-        }
-        else {
+        } else {
             let id = self.external_id(target, part_uri)?;
             link.set_attribute(link.root, R, "id", &id, Some("r"))?;
         }
@@ -201,11 +191,7 @@ impl Hyperlinks {
         Ok(uri)
     }
     fn find_external(&self, uri: &str, target: &str) -> Result<Option<String>> {
-        let found = self
-            .package
-            .lock()?
-            .relationships(uri)?
-            .into_iter()
+        let found = self.package.lock()?.relationships(uri)?.into_iter()
             .find(|r| matches!(r.kind.as_str(), HYPERLINK | STRICT_HYPERLINK) && r.mode == "External" && r.target == target);
         Ok(found.map(|r| r.id))
     }
@@ -305,9 +291,11 @@ impl Hyperlink {
         let xml = self.xml();
         if let Some(anchor) = target.strip_prefix('#') {
             name_value(anchor)?;
-            xml.edit(|doc| { doc.remove_attribute(self.element, R, "id")?; doc.set_attribute(self.element, W, "anchor", anchor, Some("w")) })?;
-        }
-        else {
+            xml.edit(|doc| {
+                doc.remove_attribute(self.element, R, "id")?;
+                doc.set_attribute(self.element, W, "anchor", anchor, Some("w"))
+            })?;
+        } else {
             let ident = match self.hyperlinks.find_external(&uri, target)? {
                 Some(id) => id,
                 None => match &previous {
@@ -321,7 +309,10 @@ impl Hyperlink {
                     _ => self.hyperlinks.external_relationship(&uri, target)?,
                 },
             };
-            xml.edit(|doc| { doc.remove_attribute(self.element, W, "anchor")?; doc.set_attribute(self.element, R, "id", &ident, Some("r")) })?;
+            xml.edit(|doc| {
+                doc.remove_attribute(self.element, W, "anchor")?;
+                doc.set_attribute(self.element, R, "id", &ident, Some("r"))
+            })?;
         }
         self.hyperlinks.release(&uri, previous)
     }

@@ -30,17 +30,12 @@ fn zip_error(error: impl std::fmt::Display) -> Error { invalid(format!("Invalid 
 fn zip_entry_count(data: &[u8]) -> Result<usize> {
     if data.len() > MAX_ARCHIVE { return Err(invalid("Archive exceeds the 512 MiB limit")); }
     if data.starts_with(&[0xd0, 0xcf, 0x11, 0xe0]) { return Err(invalid("Encrypted/compound Office packages are unsupported")); }
-    let end = (0..data.len().saturating_sub(21))
-        .rev()
-        .take(65_536)
+    let end = (0..data.len().saturating_sub(21)).rev().take(65_536)
         .find(|&i| data[i..].starts_with(b"PK\x05\x06") && i + 22 + u16::from_le_bytes([data[i + 20], data[i + 21]]) as usize == data.len())
         .ok_or_else(|| invalid("Missing or malformed ZIP end-of-central-directory record"))?;
     let u16_at = |i| u16::from_le_bytes([data[end + i], data[end + i + 1]]);
-    if end >= 20 && &data[end - 20..end - 16] == b"PK\x06\x07"
-        || u16_at(10) == u16::MAX
-        || data[end + 12..end + 16] == [255; 4]
-        || data[end + 16..end + 20] == [255; 4]
-    { return Err(invalid("ZIP64 archives are unsupported")); }
+    if end >= 20 && &data[end - 20..end - 16] == b"PK\x06\x07" || u16_at(10) == u16::MAX || data[end + 12..end + 16] == [255; 4]
+        || data[end + 16..end + 20] == [255; 4] { return Err(invalid("ZIP64 archives are unsupported")); }
     if u16_at(4) != 0 || u16_at(6) != 0 || u16_at(8) != u16_at(10) { return Err(invalid("Multidisk ZIP archives are unsupported")); }
     let count = u16_at(10) as usize;
     if count > MAX_ENTRIES { return Err(invalid("Archive exceeds the 10,000 entry limit")); }
@@ -67,10 +62,7 @@ fn part_uri(uri: &str) -> Result<()> {
         while i < bytes.len() {
             let c = bytes[i];
             if c == b'%' {
-                let hex = bytes
-                    .get(i + 1..i + 3)
-                    .and_then(|s| std::str::from_utf8(s).ok())
-                    .and_then(|s| u8::from_str_radix(s, 16).ok())
+                let hex = bytes.get(i + 1..i + 3).and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| u8::from_str_radix(s, 16).ok())
                     .ok_or_else(|| invalid(format!("Invalid percent escape in OPC part URI: {uri}")))?;
                 if hex.is_ascii_alphanumeric() || b"-._~/\\".contains(&hex) || hex < 32 || hex == 127 {
                     return Err(invalid(format!("Unsafe/equivalent percent escape in OPC part URI: {uri}")));
@@ -108,11 +100,8 @@ fn resolve_target(source: &str, target: &str) -> Result<String> {
     let mut segments = Vec::new();
     for segment in joined.split('/').skip(1) {
         match segment {
-            "." => (),
-            ".." => {
-                if segments.pop().is_none() { return Err(invalid("Relationship target escapes the package root")); }
-            }
-            _ => segments.push(segment),
+            "." => (), ".." => { if segments.pop().is_none() { return Err(invalid("Relationship target escapes the package root")); } }
+            _ => segments.push(segment)
         }
     }
     let result = format!("/{}", segments.join("/"));
@@ -145,8 +134,7 @@ impl Metadata {
                     for &child in &node.children {
                         match &result.doc.node(child)?.kind {
                             NodeKind::Element(_) => return Err(invalid("OPC metadata records cannot contain elements")),
-                            NodeKind::Text(t) if !t.trim().is_empty() => return Err(invalid("Unexpected text in OPC metadata")),
-                            _ => (),
+                            NodeKind::Text(t) if !t.trim().is_empty() => return Err(invalid("Unexpected text in OPC metadata")), _ => ()
                         }
                     }
                 }
@@ -171,8 +159,7 @@ impl Metadata {
         if let Some((local, attrs)) = append {
             let root = self.doc.node(self.doc.root)?.element().unwrap();
             let name = Name { uri: root.name.uri.clone(), prefix: root.name.prefix.clone(), local: local.into() };
-            let attributes = attrs
-                .iter()
+            let attributes = attrs.iter()
                 .map(|&(local, value)| Attribute { name: Name { uri: String::new(), prefix: String::new(), local: local.into() }, value: value.into() })
                 .collect();
             let element = Element { name, attributes, namespaces: root.namespaces.clone() };
@@ -185,24 +172,11 @@ impl Metadata {
 }
 
 #[derive(Clone)]
-pub struct Relationship {
-    node_id: usize,
-    pub id: String,
-    pub kind: String,
-    pub target: String,
-    pub mode: String,
-}
+pub struct Relationship { node_id: usize, pub id: String, pub kind: String, pub target: String, pub mode: String }
 
 pub struct PackageData {
-    original: Arc<[u8]>,
-    archive: ZipArchive<Cursor<Arc<[u8]>>>,
-    names: BTreeMap<String, String>,
-    changes: BTreeMap<String, Option<Vec<u8>>>,
-    main: String,
-    signed: bool,
-    loaded: BTreeMap<String, (xml::Xml, u64)>,
-    generations: BTreeMap<String, u64>,
-    pub(crate) next_drawing_id: u32,
+    original: Arc<[u8]>, archive: ZipArchive<Cursor<Arc<[u8]>>>, names: BTreeMap<String, String>, changes: BTreeMap<String, Option<Vec<u8>>>, main: String,
+    signed: bool, loaded: BTreeMap<String, (xml::Xml, u64)>, generations: BTreeMap<String, u64>, pub(crate) next_drawing_id: u32
 }
 
 impl PackageData {
@@ -228,10 +202,10 @@ impl PackageData {
             let central_header = data.get(central_start..central_start.saturating_add(46)).ok_or_else(|| invalid("Truncated ZIP central header"))?;
             let local_name_start = local_start + 30;
             let local_name_end = local_name_start + u16::from_le_bytes([local[26], local[27]]) as usize;
-            if !local.starts_with(b"PK\x03\x04")
-                || local[6..10] != central_header[8..12]
-                || data.get(local_name_start..local_name_end) != Some(entry.name_raw())
-            { return Err(invalid("ZIP local-header name, flags or compression method disagrees with the central directory")); }
+            if !local.starts_with(b"PK\x03\x04") || local[6..10] != central_header[8..12]
+                || data.get(local_name_start..local_name_end) != Some(entry.name_raw()) {
+                    return Err(invalid("ZIP local-header name, flags or compression method disagrees with the central directory"));
+                }
             let name = entry.name().map_err(zip_error)?;
             if std::str::from_utf8(entry.name_raw()).ok() != Some(name.as_ref()) { return Err(invalid("Non-UTF-8 ZIP entry names are unsupported")); }
             let uri = format!("/{}", name.strip_suffix('/').unwrap_or(name.as_ref()));
@@ -252,17 +226,8 @@ impl PackageData {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
             if entry.is_dir() { names.remove(&format!("/{}", entry.name().map_err(zip_error)?.trim_end_matches('/')).to_ascii_lowercase()); }
         }
-        let mut package = Self {
-            original,
-            archive,
-            names,
-            changes: BTreeMap::new(),
-            main: String::new(),
-            signed: false,
-            loaded: BTreeMap::new(),
-            generations: BTreeMap::new(),
-            next_drawing_id: 0,
-        };
+        let mut package = Self { original, archive, names, changes: BTreeMap::new(), main: String::new(), signed: false, loaded: BTreeMap::new(),
+            generations: BTreeMap::new(), next_drawing_id: 0 };
         let types = package.types()?;
         package.signed = types.records().map(|(_, r)| r).any(|r| r.attribute("", "ContentType").is_some_and(|s| s.contains("digital-signature")));
         for uri in package.names.values() {
@@ -280,10 +245,7 @@ impl PackageData {
 
     pub fn existing(&self, uri: &str) -> Result<String> {
         part_uri(uri)?;
-        self.names
-            .get(&uri.to_ascii_lowercase())
-            .filter(|name| self.changes.get(*name) != Some(&None))
-            .cloned()
+        self.names.get(&uri.to_ascii_lowercase()).filter(|name| self.changes.get(*name) != Some(&None)).cloned()
             .ok_or_else(|| Error::Missing(format!("No such OPC part: {uri}")))
     }
 
@@ -306,25 +268,16 @@ impl PackageData {
         let mut errors = Vec::new();
         for index in 0..archive.len() {
             let mut entry = match archive.by_index(index) {
-                Ok(entry) => entry,
-                Err(e) => {
-                    errors.push((format!("ZIP entry {index}"), e.to_string()));
-                    continue;
-                }
+                Ok(entry) => entry, Err(e) => { errors.push((format!("ZIP entry {index}"), e.to_string())); continue; }
             };
             let uri = match entry.name() {
-                Ok(name) => format!("/{name}"),
-                Err(e) => {
-                    errors.push((format!("ZIP entry {index}"), e.to_string()));
-                    continue;
-                }
+                Ok(name) => format!("/{name}"), Err(e) => { errors.push((format!("ZIP entry {index}"), e.to_string())); continue; }
             };
             if self.changes.contains_key(&uri) || self.loaded.contains_key(&uri) { continue; }
             let expected = entry.size();
             match std::io::copy(&mut (&mut entry).take(expected + 1), &mut std::io::sink()) {
-                Ok(size) if size == expected => (),
-                Ok(_) => errors.push((uri, "ZIP payload size does not match its index".into())),
-                Err(e) => errors.push((uri, e.to_string())),
+                Ok(size) if size == expected => (), Ok(_) => errors.push((uri, "ZIP payload size does not match its index".into())),
+                Err(e) => errors.push((uri, e.to_string()))
             }
         }
         errors
@@ -383,11 +336,8 @@ impl PackageData {
             return Err(invalid("Invalid content type"));
         }
         let metadata = self.types()?;
-        let remove: Vec<_> = metadata
-            .records()
-            .filter(|(_, r)| r.name.local == "Override" && r.attribute("", "PartName").is_some_and(|p| p.eq_ignore_ascii_case(uri)))
-            .map(|(i, _)| i)
-            .collect();
+        let remove: Vec<_> = metadata.records()
+            .filter(|(_, r)| r.name.local == "Override" && r.attribute("", "PartName").is_some_and(|p| p.eq_ignore_ascii_case(uri))).map(|(i, _)| i).collect();
         self.put(TYPES, metadata.write(&remove, Some(("Override", &[("PartName", uri), ("ContentType", content_type)])))?);
         Ok(())
     }
@@ -427,9 +377,7 @@ impl PackageData {
         for i in 0..archive.len() {
             let entry = archive.by_index_raw(i).map_err(zip_error)?;
             let size = match self.changes.get(&format!("/{}", entry.name().map_err(zip_error)?)) {
-                Some(Some(data)) => data.len() as u64,
-                Some(None) => continue,
-                None => entry.size(),
+                Some(Some(data)) => data.len() as u64, Some(None) => continue, None => entry.size()
             };
             total += size;
             count += 1;
@@ -455,8 +403,7 @@ impl PackageData {
                     writer.start_file(&name[1..], options).map_err(zip_error)?;
                     writer.write_all(data).map_err(zip_error)?;
                 }
-            }
-            else {
+            } else {
                 // raw_copy_file trusts the CRC. Verify decompression before accepting it.
                 if !entry.is_dir() { self.data(&name)?; }
                 writer.raw_copy_file(entry).map_err(zip_error)?;
@@ -480,16 +427,10 @@ impl PackageData {
     pub fn new() -> Result<Self> {
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
         for (name, data) in [
-            (
-                "[Content_Types].xml",
-                format!(
-                    r#"<Types xmlns="{CT_NS}"><Default Extension="rels" ContentType="{REL_CT}"/><Override PartName="/word/document.xml" ContentType="{MAIN_CT}"/></Types>"#
-                ),
-            ),
-            (
-                "_rels/.rels",
-                format!(r#"<Relationships xmlns="{REL_NS}"><Relationship Id="rId1" Type="{OFFICE_REL}" Target="word/document.xml"/></Relationships>"#),
-            ),
+            ("[Content_Types].xml", format!(
+                r#"<Types xmlns="{CT_NS}"><Default Extension="rels" ContentType="{REL_CT}"/><Override PartName="/word/document.xml" ContentType="{MAIN_CT}"/></Types>"#
+            )), ("_rels/.rels",
+                format!(r#"<Relationships xmlns="{REL_NS}"><Relationship Id="rId1" Type="{OFFICE_REL}" Target="word/document.xml"/></Relationships>"#)),
             ("word/document.xml", r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>"#.into()),
         ] {
             writer.start_file(name, SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)).map_err(zip_error)?;
@@ -562,23 +503,16 @@ impl PackageData {
         let mut updates = Vec::new();
         let types = self.types()?;
         let own_rels = rels_uri(&name)?;
-        let remove: Vec<_> = types
-            .records()
-            .filter(|(_, r)| {
-                r.name.local == "Override" && r.attribute("", "PartName").is_some_and(|p| p.eq_ignore_ascii_case(&name) || p.eq_ignore_ascii_case(&own_rels))
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let remove: Vec<_> = types.records().filter(|(_, r)| {
+            r.name.local == "Override" && r.attribute("", "PartName").is_some_and(|p| p.eq_ignore_ascii_case(&name) || p.eq_ignore_ascii_case(&own_rels))
+        }).map(|(i, _)| i).collect();
         if !remove.is_empty() { updates.push((TYPES.to_string(), types.write(&remove, None)?)); }
         for rel_uri in self.part_names() {
             let Some(source) = rels_source(&rel_uri) else { continue };
             if rel_uri.eq_ignore_ascii_case(&own_rels) { continue; }
             let (metadata, rels) = self.rels(&source)?;
-            let remove: Vec<_> = rels
-                .iter()
-                .filter(|r| r.mode == "Internal" && resolve_target(&source, &r.target).is_ok_and(|p| p.eq_ignore_ascii_case(&name)))
-                .map(|r| r.node_id)
-                .collect();
+            let remove: Vec<_> = rels.iter().filter(|r| r.mode == "Internal" && resolve_target(&source, &r.target).is_ok_and(|p| p.eq_ignore_ascii_case(&name)))
+                .map(|r| r.node_id).collect();
             if !remove.is_empty() { updates.push((rel_uri.clone(), metadata.write(&remove, None)?)); }
         }
         for (uri, data) in updates { self.put(&uri, data); }
@@ -610,31 +544,19 @@ impl PackageData {
     pub fn relationship_id(&self, source_uri: &str, target_uri: &str) -> Result<String> {
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         let target = self.existing(target_uri)?;
-        let rel = self
-            .rels(&source)?
-            .1
-            .into_iter()
+        let rel = self.rels(&source)?.1.into_iter()
             .find(|r| r.mode == "Internal" && resolve_target(&source, &r.target).is_ok_and(|p| p.eq_ignore_ascii_case(&target)));
         rel.map(|r| r.id).ok_or_else(|| Error::Missing("No relationship to that part in this scope".into()))
     }
 
     pub fn add_relationship(
-        &mut self,
-        source_uri: &str,
-        relationship_type: &str,
-        target: &str,
-        target_mode: &str,
-        relationship_id: Option<&str>,
-    ) -> Result<String> {
+        &mut self, source_uri: &str, relationship_type: &str, target: &str, target_mode: &str, relationship_id: Option<&str>) -> Result<String> {
         self.editable()?;
         let source = if source_uri == "/" { "/".into() } else { self.existing(source_uri)? };
         if source != "/" { self.ordinary(&source)?; }
         if !["Internal", "External"].contains(&target_mode) { return Err(invalid("TargetMode must be Internal or External")); }
-        if !relationship_type.contains(':')
-            || relationship_type.chars().any(|c| c.is_whitespace() || !xml_char(c))
-            || target.is_empty()
-            || target.chars().any(|c| c.is_whitespace() || !xml_char(c))
-        { return Err(invalid("Invalid relationship type or target")); }
+        if !relationship_type.contains(':') || relationship_type.chars().any(|c| c.is_whitespace() || !xml_char(c)) || target.is_empty()
+            || target.chars().any(|c| c.is_whitespace() || !xml_char(c)) { return Err(invalid("Invalid relationship type or target")); }
         if relationship_type.contains("/digital-signature/") { return Err(invalid("Creating digital signatures is unsupported")); }
         if source == "/" && [OFFICE_REL, STRICT_REL].contains(&relationship_type) {
             return Err(invalid("The DOCX already has its officeDocument relationship"));
@@ -685,21 +607,14 @@ impl PackageData {
                     let doc = xml.read()?;
                     doc.node(doc.root)?.element().unwrap().attribute(ds, "itemID").is_some_and(|v| v.to_uppercase() == item_id)
                 };
-                if matches {
-                    self.replace_part(&item, data)?;
-                    return Ok(item);
-                }
+                if matches { self.replace_part(&item, data)?; return Ok(item); }
             }
         }
-        let n = (1..)
-            .find(|n| self.existing(&format!("/customXml/item{n}.xml")).is_err() && self.existing(&format!("/customXml/itemProps{n}.xml")).is_err())
+        let n = (1..).find(|n| self.existing(&format!("/customXml/item{n}.xml")).is_err() && self.existing(&format!("/customXml/itemProps{n}.xml")).is_err())
             .unwrap();
         let (item, props) = (format!("/customXml/item{n}.xml"), format!("/customXml/itemProps{n}.xml"));
-        let element = |local: &str| Element {
-            name: Name { uri: ds.into(), local: local.into(), prefix: "ds".into() },
-            attributes: Vec::new(),
-            namespaces: vec![("ds".into(), ds.into())],
-        };
+        let element = |local: &str| Element { name: Name { uri: ds.into(), local: local.into(), prefix: "ds".into() }, attributes: Vec::new(),
+            namespaces: vec![("ds".into(), ds.into())] };
         let mut properties = Document::from_element(element("datastoreItem"));
         properties.set_attribute(properties.root, ds, "itemID", &item_id, Some("ds"))?;
         if let Some(uri) = schema_uri {
@@ -756,11 +671,7 @@ impl Package {
     pub fn xml(&self, uri: &str) -> Result<xml::Xml> { self.lock()?.load_xml(uri) }
     pub fn owner(&self, xml: &xml::Xml) -> Result<String> {
         xml.read()?;
-        self.lock()?
-            .loaded
-            .iter()
-            .find(|(_, (tree, _))| tree.same_state(xml))
-            .map(|(uri, _)| uri.clone())
+        self.lock()?.loaded.iter().find(|(_, (tree, _))| tree.same_state(xml)).map(|(uri, _)| uri.clone())
             .ok_or_else(|| invalid("Element does not belong to this package"))
     }
     fn read_part<'py>(&self, py: Python<'py>, uri: &str) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &self.lock()?.data(uri)?)) }
@@ -787,13 +698,9 @@ impl Package {
     pub fn relationship_target(&self, source_uri: &str, target: &str) -> Result<String> { self.lock()?.relationship_target(source_uri, target) }
     #[pyo3(signature = (source_uri, relationship_type, target, target_mode="Internal", relationship_id=None))]
     pub fn add_relationship(
-        &self,
-        source_uri: &str,
-        relationship_type: &str,
-        target: &str,
-        target_mode: &str,
-        relationship_id: Option<&str>,
-    ) -> Result<String> { self.lock()?.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id) }
+        &self, source_uri: &str, relationship_type: &str, target: &str, target_mode: &str, relationship_id: Option<&str>) -> Result<String> {
+        self.lock()?.add_relationship(source_uri, relationship_type, target, target_mode, relationship_id)
+    }
     pub fn remove_relationship(&self, source_uri: &str, relationship_id: &str) -> Result<()> { self.lock()?.remove_relationship(source_uri, relationship_id) }
     pub fn relationship_id(&self, source_uri: &str, target_uri: &str) -> Result<String> { self.lock()?.relationship_id(source_uri, target_uri) }
     #[pyo3(signature = (item_id, data, schema_uri=None))]

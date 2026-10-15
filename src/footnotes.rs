@@ -1,12 +1,7 @@
 //! Footnote bodies in the footnotes part and their reference marks in stories.
 use crate::{
-    definitions::{self, ensure, set_word_attribute},
-    error::{Error, Result},
-    package::Package,
-    package_schema::{declared_uri, story_nodes},
-    schema::insertion_position,
-    text::{self, Range, Story, View, W},
-    xml::{self, Document, Xml},
+    definitions::{self, ensure, set_word_attribute}, error::{Error, Result}, package::Package, package_schema::{declared_uri, story_nodes},
+    schema::insertion_position, text::{self, Range, Story, View, W}, xml::{self, Document, Xml}
 };
 use pyo3::prelude::*;
 use std::collections::HashSet;
@@ -49,14 +44,8 @@ pub struct Footnotes { package: Package }
 impl Footnotes {
     fn ensure_styles(&self) -> Result<()> {
         for (id, display, kind, base, paragraph, run) in [
-            (
-                "FootnoteText",
-                "footnote text",
-                "paragraph",
-                "Normal",
-                &[r#"spacing w:after="0" w:line="240" w:lineRule="auto""#][..],
-                &[r#"sz w:val="20""#, r#"szCs w:val="20""#][..],
-            ),
+            ("FootnoteText", "footnote text", "paragraph", "Normal", &[r#"spacing w:after="0" w:line="240" w:lineRule="auto""#][..],
+                &[r#"sz w:val="20""#, r#"szCs w:val="20""#][..]),
             ("FootnoteReference", "footnote reference", "character", "DefaultParagraphFont", &[][..], &[r#"vertAlign w:val="superscript""#][..]),
         ] {
             match definitions::style_get(&self.package, id) { Ok(_) => continue, Err(Error::Missing(_)) => (), Err(e) => return Err(e) }
@@ -75,7 +64,10 @@ impl Footnotes {
             let present = { let doc = xml.read()?; notes(&doc)?.into_iter().any(|n| attribute(&doc, n, "type") == Some(kind)) };
             if present { continue; }
             let note = separator(kind, id)?;
-            xml.edit(|doc| { let position = insertion_position(doc, doc.root, W, "footnote")?; text::attach(doc, doc.root, position, &note).map(|_| ()) })?;
+            xml.edit(|doc| {
+                let position = insertion_position(doc, doc.root, W, "footnote")?;
+                text::attach(doc, doc.root, position, &note).map(|_| ())
+            })?;
         }
         Ok(Some(xml))
     }
@@ -161,11 +153,8 @@ impl Footnote {
         for uri in uris {
             let xml = self.footnotes.package.lock()?.load_xml(&uri)?;
             removed += xml.edit(|doc| {
-                let references: Vec<usize> = doc
-                    .element_ids()
-                    .into_iter()
-                    .filter(|&n| text::name(doc, n) == Some("footnoteReference") && attribute(doc, n, "id") == Some(ident.as_str()))
-                    .collect();
+                let references: Vec<usize> = doc.element_ids().into_iter()
+                    .filter(|&n| text::name(doc, n) == Some("footnoteReference") && attribute(doc, n, "id") == Some(ident.as_str())).collect();
                 for reference in &references {
                     let run = doc.node(*reference)?.parent.unwrap();
                     let other = doc.node(run)?.children.iter().any(|&c| c != *reference && text::name(doc, c) != Some("rPr"));

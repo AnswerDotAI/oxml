@@ -1,22 +1,8 @@
 //! Complementary XSD checks. SDK rules retain responsibility for extension placement and attributes.
-use crate::{
-    error::{Error, Result},
-    schema::{effective, ignorable, namespace_available, MC},
-    xml::{self, Document, NodeKind},
-};
-use libxml::{
-    bindings,
-    error::StructuredError,
-    parser::{Parser, ParserOptions},
-    schemas::{SchemaParserContext, SchemaValidationContext},
-};
+use crate::{error::{Error, Result}, schema::{effective, ignorable, namespace_available, MC}, xml::{self, Document, NodeKind}};
+use libxml::{bindings, error::StructuredError, parser::{Parser, ParserOptions}, schemas::{SchemaParserContext, SchemaValidationContext}};
 use serde_json::{json, Value};
-use std::{
-    cell::RefCell,
-    collections::{BTreeSet, HashMap, HashSet},
-    ffi::c_void,
-    sync::OnceLock,
-};
+use std::{cell::RefCell, collections::{BTreeSet, HashMap, HashSet}, ffi::c_void, sync::OnceLock};
 
 include!(concat!(env!("OUT_DIR"), "/xsd_assets.rs"));
 const XSD: &str = "http://www.w3.org/2001/XMLSchema";
@@ -25,31 +11,28 @@ struct Sources { roots: HashSet<(String, String)>, base: HashSet<String>, import
 
 fn sources() -> Result<&'static Sources> {
     static SOURCES: OnceLock<std::result::Result<Sources, String>> = OnceLock::new();
-    SOURCES
-        .get_or_init(|| {
-            let (mut roots, mut base) = (HashSet::new(), HashSet::new());
-            let mut imports = String::new();
-            for &(name, bytes) in ASSETS {
-                let doc = xml::parse_bytes(bytes).map_err(|e| e.to_string())?;
-                let uri = doc.node(doc.root).unwrap().element().unwrap().attribute("", "targetNamespace").unwrap();
-                if !uri.starts_with("http://schemas.microsoft.com/") { base.insert(uri.to_owned()); }
-                for id in doc.element_children(doc.root).unwrap() {
-                    let e = doc.node(id).unwrap().element().unwrap();
-                    if e.name.uri == XSD && e.name.local == "element" {
-                        if let Some(local) = e.attribute("", "name") { roots.insert((uri.to_owned(), local.to_owned())); }
-                    }
-                    if e.name.uri == XSD && ["import", "include"].contains(&e.name.local.as_str()) {
-                        if !e.attribute("", "schemaLocation").is_some_and(|p| ASSETS.iter().any(|(n, _)| *n == p)) {
-                            return Err(format!("XSD import is not a bundled local file: {name}"));
-                        }
+    SOURCES.get_or_init(|| {
+        let (mut roots, mut base) = (HashSet::new(), HashSet::new());
+        let mut imports = String::new();
+        for &(name, bytes) in ASSETS {
+            let doc = xml::parse_bytes(bytes).map_err(|e| e.to_string())?;
+            let uri = doc.node(doc.root).unwrap().element().unwrap().attribute("", "targetNamespace").unwrap();
+            if !uri.starts_with("http://schemas.microsoft.com/") { base.insert(uri.to_owned()); }
+            for id in doc.element_children(doc.root).unwrap() {
+                let e = doc.node(id).unwrap().element().unwrap();
+                if e.name.uri == XSD && e.name.local == "element" {
+                    if let Some(local) = e.attribute("", "name") { roots.insert((uri.to_owned(), local.to_owned())); }
+                }
+                if e.name.uri == XSD && ["import", "include"].contains(&e.name.local.as_str()) {
+                    if !e.attribute("", "schemaLocation").is_some_and(|p| ASSETS.iter().any(|(n, _)| *n == p)) {
+                        return Err(format!("XSD import is not a bundled local file: {name}"));
                     }
                 }
-                imports.push_str(&format!("<xs:import namespace=\"{uri}\" schemaLocation=\"{name}\"/>"));
             }
-            Ok(Sources { roots, base, imports })
-        })
-        .as_ref()
-        .map_err(|e| Error::Invalid(format!("Bundled XSD setup failed: {e}")))
+            imports.push_str(&format!("<xs:import namespace=\"{uri}\" schemaLocation=\"{name}\"/>"));
+        }
+        Ok(Sources { roots, base, imports })
+    }).as_ref().map_err(|e| Error::Invalid(format!("Bundled XSD setup failed: {e}")))
 }
 
 thread_local! { static VALIDATOR: RefCell<Option<SchemaValidationContext>> = const { RefCell::new(None) }; }
@@ -62,13 +45,8 @@ unsafe extern "C" fn capture(context: *mut c_void, error: *const bindings::xmlEr
 }
 
 struct Projection<'a> {
-    source: &'a Document,
-    target: &'a str,
-    sources: &'a Sources,
-    ids: Vec<usize>,
-    affected: HashSet<usize>,
-    extensions: Vec<usize>,
-    gaps: &'a mut BTreeSet<String>,
+    source: &'a Document, target: &'a str, sources: &'a Sources, ids: Vec<usize>, affected: HashSet<usize>, extensions: Vec<usize>,
+    gaps: &'a mut BTreeSet<String>
 }
 
 impl Projection<'_> {
@@ -82,14 +60,11 @@ impl Projection<'_> {
             self.ids.push(id);
             e.attributes.retain(|a| {
                 if a.name.uri == MC { return false; }
-                if !a.name.uri.is_empty()
-                    && a.name.uri != e.name.uri
-                    && !self.sources.base.contains(&a.name.uri)
-                    && (namespace_available(&a.name.uri, self.target) || ignorable(self.source, id, &a.name.uri))
-                {
-                    self.gaps.insert(format!("xsd:extension-attribute:{{{}}}{}", a.name.uri, a.name.local));
-                    return false;
-                }
+                if !a.name.uri.is_empty() && a.name.uri != e.name.uri && !self.sources.base.contains(&a.name.uri)
+                    && (namespace_available(&a.name.uri, self.target) || ignorable(self.source, id, &a.name.uri)) {
+                        self.gaps.insert(format!("xsd:extension-attribute:{{{}}}{}", a.name.uri, a.name.local));
+                        return false;
+                    }
                 true
             });
         }
@@ -99,17 +74,14 @@ impl Projection<'_> {
         // Text nodes keep their exact content; effective() supplies only compatibility-selected element children.
         let selected = effective(self.source, id, self.target, &mut Vec::new(), &mut Vec::new());
         let mut child_ids = Vec::new();
-        if selected == self.source.element_children(id)?.collect::<Vec<_>>() { child_ids.extend(&source.children); }
-        else {
+        if selected == self.source.element_children(id)?.collect::<Vec<_>>() { child_ids.extend(&source.children); } else {
             // OOXML MC wrappers appear in element-only content. Keep surrounding text and unwrap selected branches in place.
             for &child in &source.children {
-                if self.source.node(child)?.element().is_none() { child_ids.push(child); } else if selected.contains(&child) { child_ids.push(child); } else {
+                if self.source.node(child)?.element().is_none() { child_ids.push(child); }
+                else if selected.contains(&child) { child_ids.push(child); } else {
                     child_ids.extend(
-                        selected
-                            .iter()
-                            .copied()
-                            .filter(|&candidate| std::iter::successors(Some(candidate), |&n| self.source.node(n).ok()?.parent).any(|n| n == child)),
-                    );
+                        selected.iter().copied()
+                            .filter(|&candidate| std::iter::successors(Some(candidate), |&n| self.source.node(n).ok()?.parent).any(|n| n == child)));
                 }
             }
         }
@@ -156,8 +128,7 @@ pub(crate) fn validate(doc: &Document, target: &str, issues: &mut Vec<Value>, ga
             view.nodes.clear();
             projection.append(root, None, &mut view)?;
             pending.extend(&projection.extensions);
-            let parsed = Parser::default()
-                .parse_string_with_options(view.serialize()?, ParserOptions { recover: false, no_net: true, ..Default::default() })
+            let parsed = Parser::default().parse_string_with_options(view.serialize()?, ParserOptions { recover: false, no_net: true, ..Default::default() })
                 .map_err(|e| Error::Invalid(format!("Cannot parse XSD validation view: {e:?}")))?;
             let mut pointers = HashMap::new();
             let mut nodes = vec![parsed.get_root_element().unwrap()];
@@ -182,8 +153,7 @@ pub(crate) fn validate(doc: &Document, target: &str, issues: &mut Vec<Value>, ga
                 let id = pointers.get(&pointer).copied().unwrap_or(root);
                 let parent = doc.node(id)?.parent;
                 let structural = matches!(
-                    error.code as u32,
-                    bindings::xmlParserErrors_XML_SCHEMAV_ELEMENT_CONTENT | bindings::xmlParserErrors_XML_SCHEMAV_CVC_COMPLEX_TYPE_2_4
+                    error.code as u32, bindings::xmlParserErrors_XML_SCHEMAV_ELEMENT_CONTENT | bindings::xmlParserErrors_XML_SCHEMAV_CVC_COMPLEX_TYPE_2_4
                 );
                 if structural && (projection.affected.contains(&id) || parent.is_some_and(|p| projection.affected.contains(&p))) {
                     projection.gaps.insert(format!("xsd:projected-content-model:{id}"));

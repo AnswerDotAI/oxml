@@ -1,14 +1,7 @@
 use std::{fmt, io};
 
 #[derive(Debug)]
-pub enum Error {
-    Invalid(String),
-    Unsupported(String),
-    Missing(String),
-    Stale(String),
-    Index(String),
-    Io(io::Error),
-}
+pub enum Error { Invalid(String), Unsupported(String), Missing(String), Stale(String), Index(String), Io(io::Error) }
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl fmt::Display for Error {
@@ -23,12 +16,9 @@ impl From<Error> for pyo3::PyErr {
     fn from(error: Error) -> Self {
         use pyo3::exceptions::{PyIndexError, PyKeyError, PyNotImplementedError, PyReferenceError, PyValueError};
         match error {
-            Error::Invalid(s) => PyValueError::new_err(s),
-            Error::Unsupported(s) => PyNotImplementedError::new_err(s),
-            Error::Missing(s) => PyKeyError::new_err(s),
-            Error::Stale(s) => PyReferenceError::new_err(s),
-            Error::Index(s) => PyIndexError::new_err(s),
-            Error::Io(e) => e.into(),
+            Error::Invalid(s) => PyValueError::new_err(s), Error::Unsupported(s) => PyNotImplementedError::new_err(s),
+            Error::Missing(s) => PyKeyError::new_err(s), Error::Stale(s) => PyReferenceError::new_err(s), Error::Index(s) => PyIndexError::new_err(s),
+            Error::Io(e) => e.into()
         }
     }
 }

@@ -1,18 +1,9 @@
 //! General ordered XML storage, preflighted edits and deferred serialization. Schema knowledge lives elsewhere.
 use crate::error::{Error, Result};
 use pyo3::{prelude::*, types::PyBytes};
-use quick_xml::{
-    encoding::DecodingReader,
-    events::{BytesDecl, BytesPI, BytesStart, BytesText, Event},
-    Reader, Writer, XmlVersion,
-};
+use quick_xml::{encoding::DecodingReader, events::{BytesDecl, BytesPI, BytesStart, BytesText, Event}, Reader, Writer, XmlVersion};
 use serde_json::{json, Value};
-use std::{
-    collections::HashSet,
-    io::Read,
-    ops::Deref,
-    sync::{Arc, RwLock, RwLockReadGuard},
-};
+use std::{collections::HashSet, io::Read, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard}};
 
 const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
@@ -66,14 +57,8 @@ fn escaped(value: &str, attribute: bool) -> String {
     let mut result = String::new();
     for c in value.chars() {
         match c {
-            '&' => result.push_str("&amp;"),
-            '<' => result.push_str("&lt;"),
-            '>' => result.push_str("&gt;"),
-            '"' if attribute => result.push_str("&quot;"),
-            '\r' => result.push_str("&#13;"),
-            '\n' if attribute => result.push_str("&#10;"),
-            '\t' if attribute => result.push_str("&#9;"),
-            _ => result.push(c),
+            '&' => result.push_str("&amp;"), '<' => result.push_str("&lt;"), '>' => result.push_str("&gt;"), '"' if attribute => result.push_str("&quot;"),
+            '\r' => result.push_str("&#13;"), '\n' if attribute => result.push_str("&#10;"), '\t' if attribute => result.push_str("&#9;"), _ => result.push(c)
         }
     }
     result
@@ -112,14 +97,9 @@ impl Element {
         check_value(uri)?;
         if uri == XMLNS_NS || attribute && uri.is_empty() && local == "xmlns" { return Err(error("Use declare_namespace for namespace declarations")); }
         let prefix = match prefix {
-            Some(p) => p.to_owned(),
-            None if uri.is_empty() => String::new(),
-            None => self
-                .namespaces
-                .iter()
-                .find(|(p, u)| u == uri && (!attribute || !p.is_empty()))
-                .map(|(p, _)| p.clone())
-                .ok_or_else(|| error("New namespace requires an explicit prefix"))?,
+            Some(p) => p.to_owned(), None if uri.is_empty() => String::new(), None => self.namespaces.iter()
+                .find(|(p, u)| u == uri && (!attribute || !p.is_empty())).map(|(p, _)| p.clone())
+                .ok_or_else(|| error("New namespace requires an explicit prefix"))?
         };
         if !prefix.is_empty() { check_local(&prefix)?; }
         if attribute && prefix.is_empty() && !uri.is_empty() { return Err(error("Namespaced attributes require a nonempty prefix")); }
@@ -134,19 +114,9 @@ impl Element {
     }
 }
 #[derive(Clone, Debug)]
-pub enum NodeKind {
-    Element(Element),
-    Text(String),
-    Comment(String),
-    Pi { target: String, value: String },
-}
+pub enum NodeKind { Element(Element), Text(String), Comment(String), Pi { target: String, value: String } }
 #[derive(Clone, Debug)]
-pub struct Node {
-    pub id: usize,
-    pub parent: Option<usize>,
-    pub kind: NodeKind,
-    pub children: Vec<usize>,
-}
+pub struct Node { pub id: usize, pub parent: Option<usize>, pub kind: NodeKind, pub children: Vec<usize> }
 impl Node {
     pub fn element(&self) -> Option<&Element> { if let NodeKind::Element(e) = &self.kind { Some(e) } else { None } }
     pub fn text(&self) -> Option<&str> { match &self.kind { NodeKind::Text(s) | NodeKind::Comment(s) => Some(s), _ => None } }
@@ -154,13 +124,7 @@ impl Node {
 #[derive(Clone, Debug)]
 struct Declaration { standalone: Option<String> }
 #[derive(Clone, Debug)]
-pub struct Document {
-    pub nodes: Vec<Option<Node>>,
-    pub root: usize,
-    pub children: Vec<usize>,
-    declaration: Option<Declaration>,
-    mutation: u64,
-}
+pub struct Document { pub nodes: Vec<Option<Node>>, pub root: usize, pub children: Vec<usize>, declaration: Option<Declaration>, mutation: u64 }
 impl Document {
     pub fn from_element(element: Element) -> Self {
         let root = Node { id: 0, parent: None, kind: NodeKind::Element(element), children: Vec::new() };
@@ -248,8 +212,9 @@ impl Document {
         check_binding(prefix, uri)?;
         let e = self.node(id)?.element().ok_or_else(|| error("Expected an XML element"))?;
         if e.name.prefix == prefix && e.name.uri != uri
-            || e.attributes.iter().any(|a| !a.name.prefix.is_empty() && a.name.prefix == prefix && a.name.uri != uri)
-        { return Err(error("Namespace binding conflicts with an existing name")); }
+            || e.attributes.iter().any(|a| !a.name.prefix.is_empty() && a.name.prefix == prefix && a.name.uri != uri) {
+                return Err(error("Namespace binding conflicts with an existing name"));
+            }
         let e = self.element_mut(id)?;
         let old_context = e.namespaces.len();
         bind(&mut e.namespaces, prefix, uri)?;
@@ -345,10 +310,7 @@ impl Document {
     }
     fn append_text(&mut self, parent: Option<usize>, value: String) -> Result<()> {
         if let Some(id) = self.sequence(parent)?.last().copied() {
-            if let NodeKind::Text(old) = &mut self.node_mut(id)?.kind {
-                old.push_str(&value);
-                return Ok(());
-            }
+            if let NodeKind::Text(old) = &mut self.node_mut(id)?.kind { old.push_str(&value); return Ok(()); }
         }
         self.add(parent, NodeKind::Text(value))?;
         Ok(())
@@ -471,26 +433,17 @@ impl Document {
     fn row(&self, id: usize) -> Result<Value> {
         let node = self.node(id)?;
         let kind = match node.kind {
-            NodeKind::Element(_) => "element",
-            NodeKind::Text(_) => "text",
-            NodeKind::Comment(_) => "comment",
-            NodeKind::Pi { .. } => "pi",
+            NodeKind::Element(_) => "element", NodeKind::Text(_) => "text", NodeKind::Comment(_) => "comment", NodeKind::Pi { .. } => "pi"
         };
         let mut row = json!({"id":node.id,"parent":node.parent,"kind":kind,"children":node.children});
         if let Some(e) = node.element() {
-            let content = node
-                .children
-                .iter()
-                .map(|id| {
-                    let child = self.nodes[*id].as_ref().unwrap();
-                    match &child.kind {
-                        NodeKind::Element(_) => json!(["element", id]),
-                        NodeKind::Text(s) => json!(["text", s]),
-                        NodeKind::Comment(s) => json!(["comment", s]),
-                        NodeKind::Pi { target, value } => json!(["pi", [target, value]]),
-                    }
-                })
-                .collect::<Vec<_>>();
+            let content = node.children.iter().map(|id| {
+                let child = self.nodes[*id].as_ref().unwrap();
+                match &child.kind {
+                    NodeKind::Element(_) => json!(["element", id]), NodeKind::Text(s) => json!(["text", s]), NodeKind::Comment(s) => json!(["comment", s]),
+                    NodeKind::Pi { target, value } => json!(["pi", [target, value]])
+                }
+            }).collect::<Vec<_>>();
             row["qname"] = json!([e.name.uri, e.name.local]);
             row["prefix"] = json!(e.name.prefix);
             row["attributes"] = json!(e.attributes.iter().map(|a| [&a.name.uri, &a.name.local, &a.value]).collect::<Vec<_>>());
@@ -505,12 +458,10 @@ impl Document {
                     _ => None,
                 })
                 .collect::<String>());
-        }
-        else if let NodeKind::Pi { target, value } = &node.kind {
+        } else if let NodeKind::Pi { target, value } = &node.kind {
             row["target"] = json!(target);
             row["text"] = json!(value);
-        }
-        else { row["text"] = json!(node.text()); }
+        } else { row["text"] = json!(node.text()); }
         Ok(row)
     }
 }
@@ -528,24 +479,20 @@ fn attributes(start: &BytesStart<'_>) -> Result<Vec<(String, String)>> {
             }
         } else if matches!(c, '\'' | '"') { quote = Some(c); }
     }
-    start
-        .attributes()
-        .map(|a| {
-            let a = a.map_err(error)?;
-            if a.value.len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
-            let value = a.normalized_value(XmlVersion::Implicit1_0).map_err(error)?.into_owned();
-            check_value(&value)?;
-            Ok((a.key.as_ref().into(), value))
-        })
-        .collect()
+    start.attributes().map(|a| {
+        let a = a.map_err(error)?;
+        if a.value.len() > MAX_ATTRIBUTE { return Err(error("XML attribute exceeds the 1 MiB limit")); }
+        let value = a.normalized_value(XmlVersion::Implicit1_0).map_err(error)?.into_owned();
+        check_value(&value)?;
+        Ok((a.key.as_ref().into(), value))
+    }).collect()
 }
 fn declaration(event: &BytesDecl<'_>, encoding: &str) -> Result<Declaration> {
     let start = BytesStart::from_content(event.as_ref(), 3);
     let attrs = attributes(&start)?;
     let names = attrs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
     if !matches!(names.as_slice(), ["version"] | ["version", "encoding"] | ["version", "standalone"] | ["version", "encoding", "standalone"])
-        || attrs[0].1 != "1.0"
-    { return Err(error("Invalid or unsupported XML declaration")); }
+        || attrs[0].1 != "1.0" { return Err(error("Invalid or unsupported XML declaration")); }
     // Declaration pseudo-attributes are literal grammar, never entity references.
     if event.as_ref().contains('&') { return Err(error("Entity reference in XML declaration")); }
     let declared = attrs.iter().find(|(n, _)| n == "encoding").map(|(_, v)| v.to_ascii_uppercase());
@@ -584,7 +531,8 @@ fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> Result<Docum
                 let mut namespaces = match parent { Some(id) => doc.node(id)?.element().unwrap().namespaces.clone(), None => base_namespaces() };
                 let attrs = attributes(start)?;
                 for (key, value) in &attrs {
-                    if key == "xmlns" { bind(&mut namespaces, "", value)?; } else if let Some(prefix) = key.strip_prefix("xmlns:") {
+                    if key == "xmlns" { bind(&mut namespaces, "", value)?; }
+                    else if let Some(prefix) = key.strip_prefix("xmlns:") {
                         check_local(prefix)?;
                         bind(&mut namespaces, prefix, value)?;
                     }
@@ -603,9 +551,7 @@ fn parse_encoded(source: &str, encoding: &str, max_depth: usize) -> Result<Docum
                 let id = doc.add(parent, NodeKind::Element(Element { name, attributes, namespaces }))?;
                 if matches!(event, Event::Start(_)) { stack.push(id); }
             }
-            Event::End(_) => {
-                stack.pop().ok_or_else(|| error("Unmatched XML end tag"))?;
-            }
+            Event::End(_) => { stack.pop().ok_or_else(|| error("Unmatched XML end tag"))?; }
             Event::Text(text) => {
                 if text.as_ref().contains("]]>") { return Err(error("Literal ']]>' in XML text")); }
                 let value = text.xml10_content().into_owned();
@@ -672,13 +618,7 @@ fn fragment(data: &[u8], namespaces: &[(String, String)]) -> Result<Document> {
     parse_encoded(&format!("{opening}>{source}</fragment>"), "UTF-8", MAX_DEPTH + 1)
 }
 
-struct XmlState {
-    document: Document,
-    cached_bytes: Option<Vec<u8>>,
-    revision: u64,
-    live: bool,
-    read_only: bool,
-}
+struct XmlState { document: Document, cached_bytes: Option<Vec<u8>>, revision: u64, live: bool, read_only: bool }
 
 /// A handle to one XML tree, shared by standalone views and the containing package.
 #[derive(Clone)]
@@ -789,10 +729,7 @@ impl Xml {
         let doc = self.read()?;
         let node = doc.node(id)?;
         Ok(if node.element().is_some() {
-            node.children
-                .iter()
-                .filter_map(|id| match &doc.nodes[*id].as_ref().unwrap().kind { NodeKind::Text(t) => Some(t.as_str()), _ => None })
-                .collect()
+            node.children.iter().filter_map(|id| match &doc.nodes[*id].as_ref().unwrap().kind { NodeKind::Text(t) => Some(t.as_str()), _ => None }).collect()
         } else { node.text().unwrap_or("").to_string() })
     }
     pub fn qname(&self, id: usize) -> Result<(String, String)> {
@@ -842,15 +779,24 @@ impl Xml {
         self.edit(|doc| { check_value(value)?; doc.insert_kind(parent, index, NodeKind::Text(value.into())) })
     }
     pub fn insert_comment(&self, parent: usize, index: usize, value: &str) -> Result<usize> {
-        self.edit(|doc| { check_comment(value)?; doc.insert_kind(parent, index, NodeKind::Comment(normalize_eols(value))) })
+        self.edit(|doc| {
+            check_comment(value)?;
+            doc.insert_kind(parent, index, NodeKind::Comment(normalize_eols(value)))
+        })
     }
     #[pyo3(signature=(parent, index, target, value=""))]
     pub fn insert_pi(&self, parent: usize, index: usize, target: &str, value: &str) -> Result<usize> {
-        self.edit(|doc| { check_pi(target, value)?; doc.insert_kind(parent, index, NodeKind::Pi { target: target.into(), value: normalize_eols(value) }) })
+        self.edit(|doc| {
+            check_pi(target, value)?;
+            doc.insert_kind(parent, index, NodeKind::Pi { target: target.into(), value: normalize_eols(value) })
+        })
     }
     pub fn delete(&self, id: usize) -> Result<()> { self.edit(|doc| doc.remove(id)) }
     pub fn replace_node(&self, id: usize, data: &[u8]) -> Result<Vec<usize>> {
-        self.edit(|doc| { let (parent, index) = doc.position(id)?; Self::insert_fragment(doc, parent, index, data, Some(id)) })
+        self.edit(|doc| {
+            let (parent, index) = doc.position(id)?;
+            Self::insert_fragment(doc, parent, index, data, Some(id))
+        })
     }
     pub fn copy(&self, id: usize, parent: usize, index: usize) -> Result<usize> { self.edit(|doc| doc.copy(id, parent, index)) }
     pub fn copy_to(&self, id: usize, destination: &Xml, parent: usize, index: usize) -> Result<usize> {
@@ -866,13 +812,8 @@ impl Xml {
     pub fn replace(&self, data: &[u8]) -> Result<()> {
         let parsed = parse_bytes(data)?;
         self.edit(|doc| {
-            let mut candidate = Document {
-                nodes: vec![None; doc.nodes.len()],
-                root: 0,
-                children: Vec::new(),
-                declaration: parsed.declaration.clone(),
-                mutation: doc.mutation.wrapping_add(1),
-            };
+            let mut candidate = Document { nodes: vec![None; doc.nodes.len()], root: 0, children: Vec::new(), declaration: parsed.declaration.clone(),
+                mutation: doc.mutation.wrapping_add(1) };
             for id in &parsed.children { candidate.import(&parsed, *id, None)?; }
             candidate.set_root()?;
             *doc = candidate;

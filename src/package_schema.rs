@@ -12,10 +12,7 @@ fn part(name: Option<&str>) -> &'static Value { &schema()["parts"][name.unwrap_o
 type PartRules = HashMap<&'static str, (&'static Value, &'static Value)>;
 #[derive(Default)]
 struct PartIndex {
-    roots: HashMap<&'static str, Option<(&'static str, &'static str)>>,
-    rules: HashMap<&'static str, PartRules>,
-    empty: PartRules,
-    paths: HashSet<&'static str>,
+    roots: HashMap<&'static str, Option<(&'static str, &'static str)>>, rules: HashMap<&'static str, PartRules>, empty: PartRules, paths: HashSet<&'static str>
 }
 fn part_index() -> &'static PartIndex {
     static INDEX: OnceLock<PartIndex> = OnceLock::new();
@@ -28,15 +25,13 @@ fn part_index() -> &'static PartIndex {
         }
         for (name, info) in schema()["parts"].as_object().unwrap() {
             let local = s(&info["RootElement"]);
-            let root = if let Some(root) = info["Root"].as_str() { Some((s(&schema()["namespaces"][root.split(':').next().unwrap_or("")]), local)) } else { roots.get(local).filter(|names| names.len() == 1).and_then(|names| names.iter().next().copied()) };
+            let root = if let Some(root) = info["Root"].as_str() { Some((s(&schema()["namespaces"][root.split(':').next().unwrap_or("")]), local)) }
+            else { roots.get(local).filter(|names| names.len() == 1).and_then(|names| names.iter().next().copied()) };
             index.roots.insert(name, root);
-            index.rules.insert(
-                name,
-                arr(&info["Children"])
-                    .iter()
-                    .filter_map(|rule| { let info = part(rule["Name"].as_str()); info["RelationshipType"].as_str().map(|kind| (kind, (rule, info))) })
-                    .collect(),
-            );
+            index.rules.insert(name, arr(&info["Children"]).iter().filter_map(|rule| {
+                let info = part(rule["Name"].as_str());
+                info["RelationshipType"].as_str().map(|kind| (kind, (rule, info)))
+            }).collect());
         }
         index.paths =
             arr(&schema()["semantics"]).iter().filter_map(|r| s(&r["Test"]).split_once("document('Part:")?.1.split_once("')").map(|(path, _)| path)).collect();
@@ -77,12 +72,7 @@ impl RelatedPart {
         json!({"id":r.id,"type":r.kind,"target":r.target,"target_mode":r.mode,"part_uri":self.uri,"part_name":self.name})
     }
 }
-struct Entry {
-    uri: String,
-    name: Option<&'static str>,
-    relationships: Vec<RelatedPart>,
-    errors: Vec<Value>,
-}
+struct Entry { uri: String, name: Option<&'static str>, relationships: Vec<RelatedPart>, errors: Vec<Value> }
 
 fn related_parts(package: &PackageData) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
@@ -112,10 +102,7 @@ fn related_parts(package: &PackageData) -> Result<Vec<Entry>> {
                         if uri == package.main_part() { rel.name = Some("MainDocumentPart"); }
                         if rel.name.is_none() {
                             let content_type = package.content_type(&uri)?;
-                            let mut candidates = schema()["parts"]
-                                .as_object()
-                                .unwrap()
-                                .iter()
+                            let mut candidates = schema()["parts"].as_object().unwrap().iter()
                                 .filter(|(_, info)| s(&info["RelationshipType"]) == rel.relationship.kind && s(&info["ContentType"]) == content_type);
                             let candidate = candidates.next();
                             if candidates.next().is_none() { rel.name = candidate.map(|(name, _)| name.as_str()); }
@@ -136,11 +123,8 @@ fn related_parts(package: &PackageData) -> Result<Vec<Entry>> {
 
 fn story_container(name: Option<&str>) -> Option<Option<&'static str>> {
     match name? {
-        "MainDocumentPart" | "HeaderPart" | "FooterPart" => Some(None),
-        "FootnotesPart" => Some(Some("footnote")),
-        "EndnotesPart" => Some(Some("endnote")),
-        "WordprocessingCommentsPart" => Some(Some("comment")),
-        _ => None,
+        "MainDocumentPart" | "HeaderPart" | "FooterPart" => Some(None), "FootnotesPart" => Some(Some("footnote")), "EndnotesPart" => Some(Some("endnote")),
+        "WordprocessingCommentsPart" => Some(Some("comment")), _ => None
     }
 }
 
@@ -171,7 +155,9 @@ fn package_issue(entry: &Entry, target: &str, rule: &str, expected: impl Into<Va
 
 fn dependency<'a>(entries: &'a [Entry], mut uri: &'a str, path: &str) -> Option<&'a str> {
     if path == "." { return Some(uri); }
-    if path == ".." { return entries.iter().find(|e| e.uri != "/" && e.relationships.iter().any(|r| r.uri.as_deref() == Some(uri))).map(|e| e.uri.as_str()); }
+    if path == ".." {
+        return entries.iter().find(|e| e.uri != "/" && e.relationships.iter().any(|r| r.uri.as_deref() == Some(uri))).map(|e| e.uri.as_str());
+    }
     if path.starts_with('/') { uri = "/"; }
     for name in path.trim_matches('/').split('/') {
         uri = entries.iter().find(|e| e.uri == uri)?.relationships.iter().find(|r| r.name == Some(name))?.uri.as_deref()?;
@@ -192,20 +178,17 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
         for error in &entry.errors {
             incomplete.push(error.clone());
             issues.push(package_issue(
-                entry,
-                target,
-                if error["target"].is_null() { "relationship-xml" } else { "relationship-target" },
-                "readable internal relationships",
-                error.clone(),
-            ));
+                entry, target, if error["target"].is_null() { "relationship-xml" } else { "relationship-target" }, "readable internal relationships",
+                error.clone()));
         }
         for rel in &entry.relationships {
             let Some(uri) = &rel.uri else { continue; };
             let kind = rel.relationship.kind.as_str();
             let Some(&(rule, info)) = rules.get(kind) else {
                 if entry.name.is_some()
-                    && schema()["parts"].as_object().unwrap().values().any(|i| s(&i["RelationshipType"]) == kind && available(s(&i["Version"]), target))
-                { issues.push(package_issue(entry, target, "part-not-allowed", format!("a permitted {} relationship", entry.name.unwrap()), rel.value())); }
+                    && schema()["parts"].as_object().unwrap().values().any(|i| s(&i["RelationshipType"]) == kind && available(s(&i["Version"]), target)) {
+                        issues.push(package_issue(entry, target, "part-not-allowed", format!("a permitted {} relationship", entry.name.unwrap()), rel.value()));
+                    }
                 continue;
             };
             if !available(s(&info["Version"]), target) { continue; }
@@ -236,24 +219,17 @@ pub fn validate(package: &mut PackageData, target: &str) -> Result<Value> {
             gaps.insert(format!("unchecked-part:{}", entry.uri));
             continue;
         }
-        if info["Root"].is_null() && info["RootElement"].is_null() {
-            if info.is_null() { gaps.insert(format!("opaque-part:{}", entry.uri)); }
-            continue;
-        }
+        if info["Root"].is_null() && info["RootElement"].is_null() { if info.is_null() { gaps.insert(format!("opaque-part:{}", entry.uri)); } continue; }
         match package.load_xml(&entry.uri) {
             Ok(xml) => {
                 let doc = xml.read()?;
                 let actual = &doc.node(doc.root)?.element().unwrap().name;
                 match part_root(entry.name.unwrap()) {
-                    Ok(_) if actual.uri.starts_with("http://purl.oclc.org/ooxml/") => {
-                        gaps.insert(format!("strict-part-root:{}", entry.uri));
-                    }
+                    Ok(_) if actual.uri.starts_with("http://purl.oclc.org/ooxml/") => { gaps.insert(format!("strict-part-root:{}", entry.uri)); }
                     Ok(expected) if (actual.uri.as_str(), actual.local.as_str()) != expected => {
                         issues.push(package_issue(entry, target, "part-root", json!([expected.0, expected.1]), json!([actual.uri, actual.local])));
                     }
-                    Err(_) => {
-                        gaps.insert(format!("unknown-part-root:{}", entry.uri));
-                    }
+                    Err(_) => { gaps.insert(format!("unknown-part-root:{}", entry.uri)); }
                     _ => (),
                 }
                 drop(doc);
@@ -327,11 +303,8 @@ fn create_declared(package: &mut PackageData, main: &str, info: &Value, expected
         uri = format!("{base}{number}.xml");
     }
     let prefix = prefix_of(expected.0);
-    let root = Element {
-        name: Name { uri: expected.0.into(), local: expected.1.into(), prefix: prefix.into() },
-        attributes: Vec::new(),
-        namespaces: vec![(prefix.into(), expected.0.into())],
-    };
+    let root = Element { name: Name { uri: expected.0.into(), local: expected.1.into(), prefix: prefix.into() }, attributes: Vec::new(),
+        namespaces: vec![(prefix.into(), expected.0.into())] };
     package.add_part(&uri, s(&info["ContentType"]), &Document::from_element(root).serialize()?)?;
     package.add_relationship(main, s(&info["RelationshipType"]), &uri, "Internal", None)?;
     Ok(uri)

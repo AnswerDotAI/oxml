@@ -1,12 +1,7 @@
 //! Selected subtree import with per-operation dependency and identifier maps.
 use crate::{
-    definitions::{find_id, set_word_attribute, word_attribute},
-    error::{Error, Result},
-    package::{Package, PackageData, Relationship},
-    package_schema::{declared_uri, story_nodes},
-    schema::insertion_position,
-    text::{self, unique_child, W, W14},
-    xml::{Document, Xml},
+    definitions::{find_id, set_word_attribute, word_attribute}, error::{Error, Result}, package::{Package, PackageData, Relationship},
+    package_schema::{declared_uri, story_nodes}, schema::insertion_position, text::{self, unique_child, W, W14}, xml::{Document, Xml}
 };
 use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -54,7 +49,10 @@ fn inherit_ignorable(source: &Document, id: usize, copy: &mut Document) -> Resul
     if namespaces.is_empty() { return Ok(()); }
     let mut prefixes =
         copy.node(copy.root)?.element().unwrap().attribute(MC, "Ignorable").unwrap_or("").split_whitespace().map(str::to_string).collect::<Vec<_>>();
-    for uri in namespaces { let prefix = copy.ensure_namespace(copy.root, &uri, "imported")?; if !prefixes.contains(&prefix) { prefixes.push(prefix); } }
+    for uri in namespaces {
+        let prefix = copy.ensure_namespace(copy.root, &uri, "imported")?;
+        if !prefixes.contains(&prefix) { prefixes.push(prefix); }
+    }
     copy.set_attribute_ns(copy.root, MC, "Ignorable", &prefixes.join(" "), "mc")?;
     Ok(())
 }
@@ -67,62 +65,24 @@ impl Kind {
     }
 }
 struct Entry { kind: Kind, doc: Document }
-struct Bookmark {
-    id: String,
-    name: Option<(String, String)>,
-    starts: usize,
-    ends: usize,
-}
+struct Bookmark { id: String, name: Option<(String, String)>, starts: usize, ends: usize }
 struct Link { relationship: Relationship, target: String, refs: Vec<(usize, usize, String, String)> }
 struct Image { uri: String, content_type: String, data: Vec<u8> }
 struct Import<'a> {
-    source: &'a mut PackageData,
-    destination: &'a mut PackageData,
-    parent: Xml,
-    parent_id: usize,
-    target_uri: String,
-    entries: Vec<Entry>,
-    styles: HashMap<String, String>,
-    nums: HashMap<i64, String>,
-    abstracts: HashMap<i64, String>,
-    style_ids: HashSet<String>,
-    style_names: HashSet<String>,
-    part_names: HashSet<String>,
-    ids: HashMap<&'static str, HashSet<i64>>,
-    bookmarks: HashMap<(String, i64), Bookmark>,
-    bookmark_names: HashSet<String>,
-    anchors: Vec<(usize, usize, String)>,
-    relationships: HashMap<(String, Kind, String), Link>,
-    images: HashMap<String, Image>,
-    source_rels: HashMap<String, Vec<Relationship>>,
-    source_definitions: HashMap<Kind, (String, Xml)>,
+    source: &'a mut PackageData, destination: &'a mut PackageData, parent: Xml, parent_id: usize, target_uri: String, entries: Vec<Entry>,
+    styles: HashMap<String, String>, nums: HashMap<i64, String>, abstracts: HashMap<i64, String>, style_ids: HashSet<String>, style_names: HashSet<String>,
+    part_names: HashSet<String>, ids: HashMap<&'static str, HashSet<i64>>, bookmarks: HashMap<(String, i64), Bookmark>, bookmark_names: HashSet<String>,
+    anchors: Vec<(usize, usize, String)>, relationships: HashMap<(String, Kind, String), Link>, images: HashMap<String, Image>,
+    source_rels: HashMap<String, Vec<Relationship>>, source_definitions: HashMap<Kind, (String, Xml)>
 }
 
 impl<'a> Import<'a> {
     fn new(source: &'a mut PackageData, destination: &'a mut PackageData, parent: Xml, parent_id: usize, target_uri: String) -> Result<Self> {
         let part_names = destination.part_names().into_iter().map(|name| name.to_lowercase()).collect();
-        let mut operation = Self {
-            source,
-            destination,
-            parent,
-            parent_id,
-            target_uri,
-            part_names,
-            entries: Vec::new(),
-            styles: HashMap::new(),
-            nums: HashMap::new(),
-            abstracts: HashMap::new(),
-            style_ids: HashSet::new(),
-            style_names: HashSet::new(),
-            ids: HashMap::new(),
-            bookmarks: HashMap::new(),
-            bookmark_names: HashSet::new(),
-            anchors: Vec::new(),
-            relationships: HashMap::new(),
-            images: HashMap::new(),
-            source_rels: HashMap::new(),
-            source_definitions: HashMap::new(),
-        };
+        let mut operation = Self { source, destination, parent, parent_id, target_uri, part_names, entries: Vec::new(), styles: HashMap::new(),
+            nums: HashMap::new(), abstracts: HashMap::new(), style_ids: HashSet::new(), style_names: HashSet::new(), ids: HashMap::new(),
+            bookmarks: HashMap::new(), bookmark_names: HashSet::new(), anchors: Vec::new(), relationships: HashMap::new(), images: HashMap::new(),
+            source_rels: HashMap::new(), source_definitions: HashMap::new() };
         if let Some(uri) = declared_uri(operation.destination, Kind::Styles.part(), false)? {
             let xml = operation.destination.load_xml(&uri)?;
             let doc = xml.read()?;
@@ -153,9 +113,7 @@ impl<'a> Import<'a> {
             let doc = xml.read()?;
             for id in doc.element_ids() {
                 for (local, attr, kind, radix) in [
-                    ("num", "numId", "num", 10),
-                    ("abstractNum", "abstractNumId", "abstract", 10),
-                    ("num", "durableId", "durable", 10),
+                    ("num", "numId", "num", 10), ("abstractNum", "abstractNumId", "abstract", 10), ("num", "durableId", "durable", 10),
                     ("nsid", "val", "nsid", 16),
                 ] {
                     if text::name(&doc, id) == Some(local) {
@@ -195,11 +153,7 @@ impl<'a> Import<'a> {
         if let Some(mapped) = self.styles.get(ident) { return Ok(mapped.clone()); }
         let (uri, xml) = self.source_definition(Kind::Styles)?;
         let doc = xml.read()?;
-        let mut matches = doc
-            .node(doc.root)?
-            .children
-            .iter()
-            .copied()
+        let mut matches = doc.node(doc.root)?.children.iter().copied()
             .filter(|&id| text::name(&doc, id) == Some("style") && word_attribute(&doc, id, "styleId") == Some(ident));
         let id = matches.next().ok_or_else(|| invalid(format!("Missing style {ident}")))?;
         if matches.next().is_some() { return Err(invalid(format!("Ambiguous style {ident}"))); }
@@ -246,11 +200,8 @@ impl<'a> Import<'a> {
         let key = (source_uri.to_string(), self.entries[entry].kind, ident.to_string());
         if !self.relationships.contains_key(&key) {
             if !self.source_rels.contains_key(source_uri) { self.source_rels.insert(source_uri.to_string(), self.source.relationships(source_uri)?); }
-            let rel = self.source_rels[source_uri]
-                .iter()
-                .find(|r| r.id == ident)
-                .ok_or_else(|| invalid(format!("Missing relationship {ident} in {source_uri}")))?
-                .clone();
+            let rel = self.source_rels[source_uri].iter().find(|r| r.id == ident)
+                .ok_or_else(|| invalid(format!("Missing relationship {ident} in {source_uri}")))?.clone();
             if rel.kind != format!("{R}/image") && rel.kind != format!("{R}/hyperlink") {
                 return Err(unsupported(format!("Unsupported imported relationship: {}", rel.kind)));
             }
@@ -288,29 +239,11 @@ impl<'a> Import<'a> {
             let e = doc.node(id)?.element().unwrap();
             let (uri, local) = (e.name.uri.clone(), e.name.local.clone());
             let attributes = e.attributes.clone();
-            if text::revision_name(doc, id).is_some()
-                || uri == W
-                    && matches!(
-                        local.as_str(),
-                        "commentRangeStart"
-                            | "commentRangeEnd"
-                            | "commentReference"
-                            | "annotationRef"
-                            | "footnoteReference"
-                            | "endnoteReference"
-                            | "sectPr"
-                            | "altChunk"
-                            | "object"
-                            | "sdt"
-                            | "fldSimple"
-                            | "fldChar"
-                            | "instrText"
-                            | "dataBinding"
-                            | "lvlPicBulletId"
-                            | "permStart"
-                            | "permEnd"
-                    )
-            { return Err(unsupported(format!("Unsupported imported structure: {local}"))); }
+            if text::revision_name(doc, id).is_some() || uri == W && matches!(
+                local.as_str(), "commentRangeStart" | "commentRangeEnd" | "commentReference" | "annotationRef" | "footnoteReference" | "endnoteReference"
+                    | "sectPr" | "altChunk" | "object" | "sdt" | "fldSimple" | "fldChar" | "instrText" | "dataBinding" | "lvlPicBulletId" | "permStart"
+                    | "permEnd"
+            ) { return Err(unsupported(format!("Unsupported imported structure: {local}"))); }
             if uri == "urn:schemas-microsoft-com:vml" && local == "shape" { return Err(unsupported("VML shape identity/dependencies are unsupported")); }
             if uri == A && matches!(local.as_str(), "stCxn" | "endCxn") { return Err(unsupported("Drawing connector identities are unsupported")); }
             if uri == W {
@@ -394,7 +327,10 @@ impl<'a> Import<'a> {
         for entry in self.entries {
             let (_, xml, parent) = &targets[&entry.kind];
             let inserted = xml.edit(|doc| {
-                let position = if entry.kind == Kind::Content { index } else { let name = &entry.doc.node(entry.doc.root)?.element().unwrap().name; insertion_position(doc, *parent, &name.uri, &name.local)? };
+                let position = if entry.kind == Kind::Content { index } else {
+                    let name = &entry.doc.node(entry.doc.root)?.element().unwrap().name;
+                    insertion_position(doc, *parent, &name.uri, &name.local)?
+                };
                 text::attach(doc, *parent, position, &entry.doc)
             })?;
             if entry.kind == Kind::Content {
@@ -407,13 +343,7 @@ impl<'a> Import<'a> {
 }
 
 pub fn import_blocks(
-    source: &Package,
-    elements: &[(Xml, usize)],
-    destination: &Package,
-    parent: &Xml,
-    parent_id: usize,
-    index: Option<usize>,
-) -> Result<Vec<usize>> {
+    source: &Package, elements: &[(Xml, usize)], destination: &Package, parent: &Xml, parent_id: usize, index: Option<usize>) -> Result<Vec<usize>> {
     if source.same_state(destination) { return Err(invalid("Use copy_to for copies within one document")); }
     if elements.is_empty() { return Ok(Vec::new()); }
     let target_uri = destination.owner(parent)?;
@@ -466,11 +396,5 @@ pub fn import_blocks(
 #[pyfunction]
 #[pyo3(signature=(source, elements, destination, parent, parent_id, index=None))]
 pub fn import_content(
-    py: Python<'_>,
-    source: &Package,
-    elements: Vec<(Xml, usize)>,
-    destination: &Package,
-    parent: &Xml,
-    parent_id: usize,
-    index: Option<usize>,
+    py: Python<'_>, source: &Package, elements: Vec<(Xml, usize)>, destination: &Package, parent: &Xml, parent_id: usize, index: Option<usize>
 ) -> Result<Vec<usize>> { py.detach(|| import_blocks(source, &elements, destination, parent, parent_id, index)) }

@@ -1,11 +1,5 @@
 use oxml::{
-    definitions,
-    error::Result,
-    footnotes::Footnotes,
-    package::Package,
-    properties::{Properties, SettingValue, Settings},
-    revisions,
-    text::{self, Story, View},
+    definitions, error::Result, footnotes::Footnotes, package::Package, properties::{Properties, SettingValue, Settings}, revisions, text::{self, Story, View}
 };
 
 #[test]

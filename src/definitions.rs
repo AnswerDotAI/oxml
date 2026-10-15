@@ -1,11 +1,5 @@
 //! Explicit styles and numbering. Shared property helpers edit the existing native tree.
-use crate::{
-    error::{Error, Result},
-    package::Package,
-    package_schema, schema,
-    text::{self, name, unique_child, W},
-    xml::{self, Document, NodeKind, Xml},
-};
+use crate::{error::{Error, Result}, package::Package, package_schema, schema, text::{self, name, unique_child, W}, xml::{self, Document, NodeKind, Xml}};
 use pyo3::prelude::*;
 use std::collections::HashSet;
 
@@ -45,10 +39,7 @@ fn integer(value: i64, label: &str, maximum: i64) -> Result<()> {
 }
 fn number(doc: &Document, id: usize, attr: &str) -> Result<i64> {
     doc.node(id)?;
-    word_attribute(doc, id, attr)
-        .ok_or_else(|| invalid(format!("Missing {attr}")))?
-        .trim_matches([' ', '\t', '\r', '\n'])
-        .parse()
+    word_attribute(doc, id, attr).ok_or_else(|| invalid(format!("Missing {attr}")))?.trim_matches([' ', '\t', '\r', '\n']).parse()
         .map_err(|_| invalid(format!("Invalid {attr}")))
 }
 pub fn find_id(doc: &Document, root: usize, local: &str, attr: &str, value: i64) -> Result<Option<usize>> {
@@ -69,10 +60,8 @@ pub fn next_id(doc: &Document, root: usize, local: &str, attr: &str, mut start: 
 fn style_kind(doc: &Document, id: usize) -> &str { word_attribute(doc, id, "type").unwrap_or("paragraph") }
 fn style_target(kind: &str) -> Result<(&str, &str, &str)> {
     match kind {
-        "paragraph" => Ok(("p", "pPr", "pStyle")),
-        "character" => Ok(("r", "rPr", "rStyle")),
-        "table" => Ok(("tbl", "tblPr", "tblStyle")),
-        _ => Err(invalid("Style kind must be paragraph, character or table")),
+        "paragraph" => Ok(("p", "pPr", "pStyle")), "character" => Ok(("r", "rPr", "rStyle")), "table" => Ok(("tbl", "tblPr", "tblStyle")),
+        _ => Err(invalid("Style kind must be paragraph, character or table"))
     }
 }
 fn style_lookup(doc: &Document, style_id: &str) -> Result<usize> {
@@ -80,13 +69,7 @@ fn style_lookup(doc: &Document, style_id: &str) -> Result<usize> {
     match found.as_slice() { [id] => Ok(*id), [] => Err(Error::Missing(style_id.into())), _ => Err(invalid("Multiple style IDs")) }
 }
 #[pyclass(module = "oxml._core")]
-pub struct Style {
-    package: Package,
-    #[pyo3(get)]
-    pub xml: Xml,
-    #[pyo3(get)]
-    pub node_id: usize,
-}
+pub struct Style { package: Package, #[pyo3(get)] pub xml: Xml, #[pyo3(get)] pub node_id: usize }
 #[pymethods]
 impl Style {
     #[getter]
@@ -153,13 +136,7 @@ pub fn style_find(package: &Package, display_name: &str, kind: Option<&str>) -> 
 #[pyfunction]
 #[pyo3(signature=(package, style_id, display_name, kind, based_on, paragraph, run))]
 pub fn style_add(
-    package: &Package,
-    style_id: &str,
-    display_name: Option<&str>,
-    kind: &str,
-    based_on: Option<&str>,
-    paragraph: Vec<Vec<u8>>,
-    run: Vec<Vec<u8>>,
+    package: &Package, style_id: &str, display_name: Option<&str>, kind: &str, based_on: Option<&str>, paragraph: Vec<Vec<u8>>, run: Vec<Vec<u8>>
 ) -> Result<Style> {
     if style_id.is_empty() { return Err(invalid("style_id requires a nonempty string")); }
     style_target(kind)?;
@@ -169,9 +146,10 @@ pub fn style_add(
         if children(&doc, doc.root, "style")?.any(|id| word_attribute(&doc, id, "styleId") == Some(style_id)) {
             return Err(invalid("Style ID already exists"));
         }
-        if let Some(base) = based_on { if style_kind(&doc, style_lookup(&doc, base)?) != kind { return Err(invalid("Base style must have the same kind")); } }
-    }
-    else if let Some(base) = based_on { return Err(Error::Missing(base.into())); }
+        if let Some(base) = based_on {
+            if style_kind(&doc, style_lookup(&doc, base)?) != kind { return Err(invalid("Base style must have the same kind")); }
+        }
+    } else if let Some(base) = based_on { return Err(Error::Missing(base.into())); }
     if kind == "character" && !paragraph.is_empty() { return Err(invalid("Character styles cannot have paragraph properties")); }
     let mut source = Document::from_element(text::word_element("style"));
     let root = source.root;
@@ -187,20 +165,16 @@ pub fn style_add(
         }
     }
     let xml = match existing { Some(xml) => xml, None => part_xml(package, "StyleDefinitionsPart", true)?.unwrap() };
-    let node_id = xml.edit(|doc| { let position = schema::insertion_position(doc, doc.root, W, "style")?; text::attach(doc, doc.root, position, &source) })?;
+    let node_id = xml.edit(|doc| {
+        let position = schema::insertion_position(doc, doc.root, W, "style")?;
+        text::attach(doc, doc.root, position, &source)
+    })?;
     Ok(Style { package: package.clone(), xml, node_id })
 }
 
 #[derive(Clone)]
 #[pyclass(module = "oxml._core", get_all, set_all, from_py_object)]
-pub struct Level {
-    pub format: String,
-    pub text: Option<String>,
-    pub start: i64,
-    pub indent: Option<i64>,
-    pub hanging: i64,
-    pub restart: Option<i64>,
-}
+pub struct Level { pub format: String, pub text: Option<String>, pub start: i64, pub indent: Option<i64>, pub hanging: i64, pub restart: Option<i64> }
 #[pymethods]
 impl Level {
     #[new]
@@ -233,13 +207,7 @@ impl Level {
     }
 }
 #[pyclass(module = "oxml._core")]
-pub struct NumberingInstance {
-    package: Package,
-    #[pyo3(get)]
-    pub xml: Xml,
-    #[pyo3(get)]
-    pub node_id: usize,
-}
+pub struct NumberingInstance { package: Package, #[pyo3(get)] pub xml: Xml, #[pyo3(get)] pub node_id: usize }
 impl NumberingInstance {
     fn definition_id(&self, doc: &Document) -> Result<usize> {
         let reference = unique_child(doc, self.node_id, "abstractNumId")?.ok_or_else(|| invalid("Numbering instance has no abstractNumId"))?;
@@ -323,7 +291,10 @@ pub fn numbering_items(package: &Package) -> Result<Vec<NumberingInstance>> {
 #[pyfunction]
 pub fn numbering_get(package: &Package, ident: i64) -> Result<NumberingInstance> {
     let xml = part_xml(package, "NumberingDefinitionsPart", false)?.ok_or_else(|| Error::Missing(ident.to_string()))?;
-    let node_id = { let doc = xml.read()?; find_id(&doc, doc.root, "num", "numId", ident)?.ok_or_else(|| Error::Missing(ident.to_string()))? };
+    let node_id = {
+        let doc = xml.read()?;
+        find_id(&doc, doc.root, "num", "numId", ident)?.ok_or_else(|| Error::Missing(ident.to_string()))?
+    };
     Ok(NumberingInstance { package: package.clone(), xml, node_id })
 }
 #[pyfunction]
