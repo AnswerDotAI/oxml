@@ -3,6 +3,7 @@ use crate::{error::{Error, Result}, package::Package, revisions::{self, Metadata
 use pyo3::prelude::*;
 use similar::{capture_diff_slices, Algorithm, DiffOp, DiffTag, TextDiff};
 use std::{collections::{BTreeMap, HashMap}, ops::Range};
+use text::Row;
 const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 fn unsupported(message: &str) -> Error { Error::Unsupported(message.into()) }
@@ -358,7 +359,7 @@ fn settle_bookmarks(doc: &mut Document, scope: usize, metadata: &mut Metadata) -
 }
 
 /// Queue a paragraph region; an insertion with no old paragraph goes before `following`, which must be a paragraph.
-fn queue(doc: &Document, rows: &[text::Row], olds: &[usize], news: &[usize], following: Option<usize>, regions: &mut Vec<Region>) -> Result<()> {
+fn queue(doc: &Document, rows: &[Row], olds: &[usize], news: &[usize], following: Option<usize>, regions: &mut Vec<Region>) -> Result<()> {
     if olds.is_empty() && news.is_empty() { return Ok(()); }
     let anchor = olds.first().copied().or(following).filter(|&id| text::name(doc, id) == Some("p"))
         .ok_or_else(|| unsupported("Paragraph changes beside tables need a neighbouring paragraph"))?;
@@ -380,7 +381,7 @@ fn table_parts(source: &Document, id: usize, content: &str, properties: &[&str])
     Ok((keys, children))
 }
 /// Paired tables with the same grid compare cell by cell; any structural difference is refused.
-fn plan_table(doc: &Document, rows: &[text::Row], old: usize, cx: &Cx, new: usize, regions: &mut Vec<Region>) -> Result<()> {
+fn plan_table(doc: &Document, rows: &[Row], old: usize, cx: &Cx, new: usize, regions: &mut Vec<Region>) -> Result<()> {
     let (old_keys, old_rows) = table_parts(doc, old, "tr", &["tblPr", "tblGrid"])?;
     let (new_keys, new_rows) = table_parts(cx.revised, new, "tr", &["tblPr", "tblGrid"])?;
     if old_keys != new_keys || old_rows.len() != new_rows.len() { return Err(unsupported("Changed table structure or row count is unsupported")); }
@@ -398,7 +399,7 @@ fn plan_table(doc: &Document, rows: &[text::Row], old: usize, cx: &Cx, new: usiz
     Ok(())
 }
 /// Align the block children of paired containers and queue the paragraph regions to diff, descending into paired tables.
-fn plan(doc: &Document, rows: &[text::Row], old_parent: usize, cx: &Cx, new_parent: usize, regions: &mut Vec<Region>) -> Result<()> {
+fn plan(doc: &Document, rows: &[Row], old_parent: usize, cx: &Cx, new_parent: usize, regions: &mut Vec<Region>) -> Result<()> {
     let revised = cx.revised;
     let blocks = |source: &Document, parent: usize| {
         source.element_children(parent).map(|ids| ids.filter(|&id| text::name(source, id) != Some("tcPr")).collect::<Vec<_>>())

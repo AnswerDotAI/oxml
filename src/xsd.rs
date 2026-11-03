@@ -2,7 +2,7 @@
 use crate::{error::{Error, Result}, schema::{effective, ignorable, namespace_available, MC}, xml::{self, Document, NodeKind}};
 use libxml::{bindings, error::StructuredError, parser::{Parser, ParserOptions}, schemas::{SchemaParserContext, SchemaValidationContext}};
 use serde_json::{json, Value};
-use std::{cell::RefCell, collections::{BTreeSet, HashMap, HashSet}, ffi::c_void, sync::OnceLock};
+use std::{cell::RefCell, collections::{BTreeSet, HashMap, HashSet}, ffi::c_void, fs, sync::OnceLock};
 
 include!(concat!(env!("OUT_DIR"), "/xsd_assets.rs"));
 const XSD: &str = "http://www.w3.org/2001/XMLSchema";
@@ -109,8 +109,8 @@ pub(crate) fn validate(doc: &Document, target: &str, issues: &mut Vec<Value>, ga
             libxml::init_parser(); // Once-only library initialization; schema primitive initialization is also guarded by the wrapper.
                                    // Imports compile eagerly. The private files disappear immediately after compilation, not at process exit.
             let directory = tempfile::tempdir()?;
-            for &(name, bytes) in ASSETS { std::fs::write(directory.path().join(name), bytes)?; }
-            std::fs::write(directory.path().join("all.xsd"), format!("<xs:schema xmlns:xs=\"{XSD}\">{}</xs:schema>", sources.imports))?;
+            for &(name, bytes) in ASSETS { fs::write(directory.path().join(name), bytes)?; }
+            fs::write(directory.path().join("all.xsd"), format!("<xs:schema xmlns:xs=\"{XSD}\">{}</xs:schema>", sources.imports))?;
             let mut parser = SchemaParserContext::from_file(directory.path().join("all.xsd").to_str().unwrap());
             *cached = Some(SchemaValidationContext::from_parser(&mut parser).map_err(|e| Error::Invalid(format!("Bundled XSD compilation failed: {e:?}")))?);
         }

@@ -1,7 +1,9 @@
 //! SDK descriptor interpreter. Unsupported mechanisms are reported, never treated as successful checks.
 use crate::error::{Error, Result};
+use crate::xml;
 use crate::xml::{Document, Node, NodeKind, Xml};
 use pyo3::prelude::*;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
@@ -300,12 +302,12 @@ pub fn insertion_position(doc: &mut Document, parent: usize, uri: &str, local: &
 pub fn reorder_children(xml: &Xml, parent: usize, deep: bool, strict: bool) -> Result<()> { xml.edit(|doc| reorder(doc, parent, deep, strict)) }
 
 fn pattern(pattern: &str, value: &str, gaps: &mut BTreeSet<String>) -> bool {
-    static PATTERNS: OnceLock<std::sync::Mutex<HashMap<String, Option<regex::Regex>>>> = OnceLock::new();
+    static PATTERNS: OnceLock<std::sync::Mutex<HashMap<String, Option<Regex>>>> = OnceLock::new();
     let mut patterns = PATTERNS.get_or_init(Default::default).lock().unwrap();
     // SDK StringValidator anchors .NET regexes. Unsupported syntax is not a successful check.
     let regex = patterns.entry(pattern.into()).or_insert_with(|| {
         if pattern.contains("-[") { return None; } // .NET character-class subtraction differs in Rust.
-        regex::Regex::new(&format!(r"\A(?:{pattern})\z")).ok()
+        Regex::new(&format!(r"\A(?:{pattern})\z")).ok()
     });
     match regex { Some(regex) => regex.is_match(value), None => { gaps.insert(format!("pattern:{pattern}")); true } }
 }
@@ -450,11 +452,11 @@ fn validator(v: &Value, value: &str, kind: &str, gaps: &mut BTreeSet<String>) ->
             ("MaxLength", Some(b)) => length <= b,
             ("Length", Some(b)) => length == b,
             ("Pattern", _) => pattern(val, value, gaps),
-            ("IsId" | "IsNcName", _) => val.eq_ignore_ascii_case("false") || crate::xml::check_local(value).is_ok() && (key != "IsNcName" || length <= 255),
+            ("IsId" | "IsNcName", _) => val.eq_ignore_ascii_case("false") || xml::check_local(value).is_ok() && (key != "IsNcName" || length <= 255),
             ("IsQName", _) => {
                 val.eq_ignore_ascii_case("false") || {
                     let names = value.split(':').collect::<Vec<_>>();
-                    names.len() <= 2 && names.iter().all(|n| crate::xml::check_local(n).is_ok())
+                    names.len() <= 2 && names.iter().all(|n| xml::check_local(n).is_ok())
                 }
             }
             ("IsToken", _) => {

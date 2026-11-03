@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use xml::Xml;
 pub mod comments;
 pub mod compare;
 pub mod definitions;
@@ -19,7 +20,7 @@ mod xsd;
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<xml::Xml>()?;
+    m.add_class::<Xml>()?;
     m.add_class::<package::Package>()?;
     m.add_class::<package::Part>()?;
     m.add_class::<text::Story>()?;

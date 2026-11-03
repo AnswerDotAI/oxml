@@ -1,11 +1,15 @@
 use crate::error::{Error, Result};
+use crate::schema;
 use crate::xml::{self, check_local, xml_char, Attribute, Document, Element, Name, NodeKind};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
+use std::str;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::{fs, io};
+use xml::Xml;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -62,7 +66,7 @@ fn part_uri(uri: &str) -> Result<()> {
         while i < bytes.len() {
             let c = bytes[i];
             if c == b'%' {
-                let hex = bytes.get(i + 1..i + 3).and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| u8::from_str_radix(s, 16).ok())
+                let hex = bytes.get(i + 1..i + 3).and_then(|s| str::from_utf8(s).ok()).and_then(|s| u8::from_str_radix(s, 16).ok())
                     .ok_or_else(|| invalid(format!("Invalid percent escape in OPC part URI: {uri}")))?;
                 if hex.is_ascii_alphanumeric() || b"-._~/\\".contains(&hex) || hex < 32 || hex == 127 {
                     return Err(invalid(format!("Unsafe/equivalent percent escape in OPC part URI: {uri}")));
@@ -176,7 +180,7 @@ pub struct Relationship { node_id: usize, pub id: String, pub kind: String, pub 
 
 pub struct PackageData {
     original: Arc<[u8]>, archive: ZipArchive<Cursor<Arc<[u8]>>>, names: BTreeMap<String, String>, changes: BTreeMap<String, Option<Vec<u8>>>, main: String,
-    signed: bool, loaded: BTreeMap<String, (xml::Xml, u64)>, generations: BTreeMap<String, u64>, pub(crate) next_drawing_id: u32
+    signed: bool, loaded: BTreeMap<String, (Xml, u64)>, generations: BTreeMap<String, u64>, pub(crate) next_drawing_id: u32
 }
 
 impl PackageData {
@@ -207,7 +211,7 @@ impl PackageData {
                     return Err(invalid("ZIP local-header name, flags or compression method disagrees with the central directory"));
                 }
             let name = entry.name().map_err(zip_error)?;
-            if std::str::from_utf8(entry.name_raw()).ok() != Some(name.as_ref()) { return Err(invalid("Non-UTF-8 ZIP entry names are unsupported")); }
+            if str::from_utf8(entry.name_raw()).ok() != Some(name.as_ref()) { return Err(invalid("Non-UTF-8 ZIP entry names are unsupported")); }
             let uri = format!("/{}", name.strip_suffix('/').unwrap_or(name.as_ref()));
             part_uri(&uri)?;
             if names.insert(uri.to_ascii_lowercase(), uri).is_some() { return Err(invalid("Duplicate/equivalent OPC part names are forbidden")); }
@@ -275,7 +279,7 @@ impl PackageData {
             };
             if self.changes.contains_key(&uri) || self.loaded.contains_key(&uri) { continue; }
             let expected = entry.size();
-            match std::io::copy(&mut (&mut entry).take(expected + 1), &mut std::io::sink()) {
+            match io::copy(&mut (&mut entry).take(expected + 1), &mut io::sink()) {
                 Ok(size) if size == expected => (), Ok(_) => errors.push((uri, "ZIP payload size does not match its index".into())),
                 Err(e) => errors.push((uri, e.to_string()))
             }
@@ -347,11 +351,11 @@ impl PackageData {
         *self.generations.entry(uri.to_string()).or_default() += 1;
     }
 
-    pub fn load_xml(&mut self, uri: &str) -> Result<xml::Xml> {
+    pub fn load_xml(&mut self, uri: &str) -> Result<Xml> {
         let name = self.existing(uri)?;
         if name == TYPES || rels_source(&name).is_some() { return Err(invalid("Use scoped content-type and relationship APIs for package metadata")); }
         if let Some((xml, _)) = self.loaded.get(&name) { return Ok(xml.clone()); }
-        let xml = xml::Xml::new(&self.data(&name)?)?;
+        let xml = Xml::new(&self.data(&name)?)?;
         xml.set_read_only(self.signed);
         self.loaded.insert(name, (xml.clone(), 0));
         Ok(xml)
@@ -588,7 +592,7 @@ impl PackageData {
     }
 
     pub fn set_custom_xml(&mut self, item_id: &str, data: &[u8], schema_uri: Option<&str>) -> Result<String> {
-        let schema = crate::schema::schema();
+        let schema = schema::schema();
         let item_rel = schema["parts"]["CustomXmlPart"]["RelationshipType"].as_str().unwrap();
         let props_info = &schema["parts"]["CustomXmlPropertiesPart"];
         let props_rel = props_info["RelationshipType"].as_str().unwrap();
@@ -635,7 +639,7 @@ impl PackageData {
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         temporary.write_all(&data)?;
-        if let Ok(metadata) = std::fs::metadata(path) { temporary.as_file().set_permissions(metadata.permissions())?; }
+        if let Ok(metadata) = fs::metadata(path) { temporary.as_file().set_permissions(metadata.permissions())?; }
         temporary.as_file().sync_all()?;
         temporary.persist(path).map_err(|error| Error::Io(error.error))?;
         Ok(())
@@ -668,8 +672,8 @@ impl Package {
         let generation = state.generations.get(&uri).copied().unwrap_or(0);
         Ok(Part { package: self.clone(), uri, generation })
     }
-    pub fn xml(&self, uri: &str) -> Result<xml::Xml> { self.lock()?.load_xml(uri) }
-    pub fn owner(&self, xml: &xml::Xml) -> Result<String> {
+    pub fn xml(&self, uri: &str) -> Result<Xml> { self.lock()?.load_xml(uri) }
+    pub fn owner(&self, xml: &Xml) -> Result<String> {
         xml.read()?;
         self.lock()?.loaded.iter().find(|(_, (tree, _))| tree.same_state(xml)).map(|(uri, _)| uri.clone())
             .ok_or_else(|| invalid("Element does not belong to this package"))
@@ -732,11 +736,11 @@ impl Part {
     #[getter]
     pub fn content_type(&self) -> Result<String> { self.check()?.content_type(&self.uri) }
     #[getter]
-    pub fn xml(&self) -> Result<xml::Xml> { self.check()?.load_xml(&self.uri) }
+    pub fn xml(&self) -> Result<Xml> { self.check()?.load_xml(&self.uri) }
     fn read_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> { Ok(PyBytes::new(py, &self.check()?.data(&self.uri)?)) }
     pub fn replace(&self, data: &[u8]) -> Result<Part> { self.check()?.replace_part(&self.uri, data)?; self.package.part(&self.uri) }
     #[pyo3(signature = (data, content_type=None, width=None, height=None, description=""))]
-    pub fn add_image(&self, data: &[u8], content_type: Option<&str>, width: Option<i64>, height: Option<i64>, description: &str) -> Result<xml::Xml> {
+    pub fn add_image(&self, data: &[u8], content_type: Option<&str>, width: Option<i64>, height: Option<i64>, description: &str) -> Result<Xml> {
         crate::images::add(&mut *self.check()?, &self.uri, data, content_type, width, height, description)
     }
 }

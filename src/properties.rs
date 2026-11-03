@@ -1,5 +1,5 @@
 //! Core properties and flat document settings over the native package and schema.
-use crate::{error::{Error, Result}, package::Package, package_schema, schema::{self, s}, text::{self, W}, xml::{Document, Element, Name, Xml}};
+use crate::{definitions, error::{Error, Result}, package::Package, package_schema, schema::{self, s}, text::{self, W}, xml::{Document, Element, Name, Xml}};
 use pyo3::prelude::*;
 
 const CORE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
@@ -147,8 +147,8 @@ impl Settings {
         schema::checked_attribute(attribute, name, &value, true)?;
         let xml = self.xml(true)?.unwrap();
         xml.edit(|doc| {
-            let id = crate::definitions::ensure(doc, doc.root, name)?;
-            if bare { doc.remove_attribute(id, W, "val") } else { crate::definitions::set_word_attribute(doc, id, "val", &value) }
+            let id = definitions::ensure(doc, doc.root, name)?;
+            if bare { doc.remove_attribute(id, W, "val") } else { definitions::set_word_attribute(doc, id, "val", &value) }
         })
     }
     pub fn remove(&self, name: &str) -> Result<()> {

@@ -1,5 +1,5 @@
 //! Tracked text, paragraph marks and direct-property histories, sharing the native text editor.
-use crate::{error::{Error, Result}, text::{self, *}, xml::{Document, NodeKind, Xml}};
+use crate::{error::{Error, Result}, schema, text::{self, *}, xml, xml::{Document, NodeKind, Xml}};
 use chrono::{DateTime, SecondsFormat, Utc};
 use pyo3::prelude::*;
 use std::{collections::{HashMap, HashSet}, time::SystemTime};
@@ -16,7 +16,7 @@ impl Metadata {
     pub fn new(doc: &Document, author: &str, date: Option<&str>) -> Result<Self> {
         if author.is_empty() { return Err(Error::Invalid("A nonempty author is required".into())); }
         let date = timestamp(date)?;
-        crate::xml::check_value(author)?;
+        xml::check_value(author)?;
         let used = doc.nodes.iter().flatten().filter_map(|n| n.element()?.attribute(W, "id")?.trim().parse().ok()).collect();
         Ok(Self { author: author.into(), date, used, next: 0 })
     }
@@ -101,11 +101,11 @@ pub fn add_mark(doc: &mut Document, paragraph: usize, snapshot: &Document) -> Re
     let properties = match unique_child(doc, properties, "rPr")? {
         Some(id) => id,
         None => {
-            let index = crate::schema::insertion_position(doc, properties, W, "rPr")?;
+            let index = schema::insertion_position(doc, properties, W, "rPr")?;
             doc.insert_kind(properties, index, NodeKind::Element(word_element("rPr")))?
         }
     };
-    let index = crate::schema::insertion_position(doc, properties, W, name(snapshot, snapshot.root).unwrap())?;
+    let index = schema::insertion_position(doc, properties, W, name(snapshot, snapshot.root).unwrap())?;
     attach(doc, properties, index, snapshot)
 }
 fn property_owner(doc: &Document, properties: usize) -> Result<usize> {
@@ -239,7 +239,7 @@ pub fn format(doc: &mut Document, scope: usize, target: usize, properties: &Docu
     }
     let kind = format!("{expected}Change");
     let history = attrs.element(&kind, Some(&previous))?;
-    let index = crate::schema::insertion_position(&mut replacement, replacement_root, W, &kind)?;
+    let index = schema::insertion_position(&mut replacement, replacement_root, W, &kind)?;
     attach(&mut replacement, replacement_root, index, &history)?;
     let index = old.map(|id| doc.position(id).map(|(_, i)| i)).transpose()?.unwrap_or(0);
     let current = doc.import_at(&replacement, replacement_root, target, index)?;
@@ -323,7 +323,7 @@ pub fn revisions_replace(py: Python<'_>, story: &Story, span: &text::Range, text
 #[pyfunction]
 #[pyo3(signature=(story, target, properties, author, date=None))]
 pub fn revisions_format(py: Python<'_>, story: &Story, target: usize, properties: &[u8], author: &str, date: Option<&str>) -> Result<usize> {
-    let properties = crate::xml::parse_bytes(properties)?;
+    let properties = xml::parse_bytes(properties)?;
     py.detach(|| {
         story.xml.edit(|doc| {
             let mut attrs = Metadata::new(doc, author, date)?;

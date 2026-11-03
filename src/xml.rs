@@ -1,5 +1,6 @@
 //! General ordered XML storage, preflighted edits and deferred serialization. Schema knowledge lives elsewhere.
 use crate::error::{Error, Result};
+use crate::schema;
 use pyo3::{prelude::*, types::PyBytes};
 use quick_xml::{encoding::DecodingReader, events::{BytesDecl, BytesPI, BytesStart, BytesText, Event}, Reader, Writer, XmlVersion};
 use serde_json::{json, Value};
@@ -668,9 +669,9 @@ impl Xml {
     pub fn attach_document(&self, parent: usize, source: &Document, index: Option<usize>) -> Result<usize> {
         let name = &source.node(source.root)?.element().ok_or_else(|| error("Expected an XML element"))?.name;
         self.edit(|doc| {
-            let index = match index { Some(i) => i, None => crate::schema::insertion_position(doc, parent, &name.uri, &name.local)? };
+            let index = match index { Some(i) => i, None => schema::insertion_position(doc, parent, &name.uri, &name.local)? };
             let id = doc.import_at(source, source.root, parent, index)?;
-            crate::schema::reorder(doc, id, true, false)?;
+            schema::reorder(doc, id, true, false)?;
             Ok(id)
         })
     }
