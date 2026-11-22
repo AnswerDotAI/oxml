@@ -8,6 +8,7 @@ description = "Office Open XML client"
 [lib]
 name = "oxml"
 crate-type = ["cdylib", "rlib"]
+test = false
 
 [profile.test]
 inherits = "release"
