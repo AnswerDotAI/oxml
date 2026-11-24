@@ -14,21 +14,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        if: runner.os != 'Linux'
       - uses: AnswerDotAI/.github/actions/sccache@main
         if: runner.os != 'Linux'
         with:
           r2-url: ${{ secrets.SCCACHE_R2 }}
       - uses: actions/setup-python@v7
+        if: runner.os != 'Linux'
         with:
-          python-version: |
-            3.10
-            3.11
-            3.12
-            3.13
+          python-version: '3.13'
       - uses: PyO3/maturin-action@v1
         with:
-          args: --profile dist --out dist -i python3.10 -i python3.11 -i python3.12 -i python3.13
-          manylinux: 2_28
+          args: --profile dist --out dist
+          manylinux: '2_28'
           before-script-linux: yum install -y clang libxml2-devel
       - uses: actions/upload-artifact@v7
         with:
@@ -47,13 +46,14 @@ jobs:
       - uses: AnswerDotAI/.github/actions/sccache@main
         with:
           r2-url: ${{ secrets.SCCACHE_R2 }}
+      - uses: AnswerDotAI/.github/actions/setup-uv@main
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Install libxml2 development dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxml2-dev libclang-dev pkg-config
-      - run: pip install -e '.[dev]'
+      - run: uv pip install --system -e '.[test]'
       - run: pytest -q
 
   sdist:
