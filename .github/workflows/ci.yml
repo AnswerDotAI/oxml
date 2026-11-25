@@ -53,7 +53,8 @@ jobs:
       - name: Install libxml2 development dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxml2-dev libclang-dev pkg-config
-      - run: uv pip install --system -e '.[test]'
+      - run: uv pip install --system --config-settings-package oxml:metadata-only=1 -e '.[test]'
+      - run: cargo develop
       - run: pytest -q
 
   sdist:
