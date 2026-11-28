@@ -208,7 +208,7 @@ The source policy targets parity with the pinned SDK. Independent standards conf
 
 `test_corpus_body.py`, `test_corpus_reviews.py` and `test_corpus_crosspart.py` independently edit expected minidom trees and compare expanded names, attributes, effective namespace bindings and ordered content. Untouched payloads must remain byte-identical. Derived documents stay in test memory or temporary output files. These tests check preservation of stored structures.
 
-CI tests editable source installs on Linux/macOS CPython 3.10-3.13 in parallel with release-wheel builds. Publishing waits for both tests and distribution builds. The test suite runs without launching Word. Current Word interoperability, a stable Python ABI and free-threading support remain unverified.
+CI tests editable source installs on Linux/macOS CPython 3.11-3.13 in parallel with release-wheel builds. Publishing waits for both tests and distribution builds. The test suite runs without launching Word. Current Word interoperability, a stable Python ABI and free-threading support remain unverified.
 
 Keep historical feasibility notes in `meta/` and exclude them from Git.
 

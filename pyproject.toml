@@ -7,7 +7,7 @@ name = "oxml"
 dynamic = ["version"]
 description = "Office Open XML client"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["fastcore>=2.2.26"]
 readme = "README.md"
 authors = [{name = "Jeremy Howard", email = "github@jhoward.fastmail.fm"}]
@@ -25,6 +25,7 @@ Homepage = "https://github.com/AnswerDotAI/oxml"
 Repository = "https://github.com/AnswerDotAI/oxml"
 Issues = "https://github.com/AnswerDotAI/oxml/issues"
 
+Documentation = "https://AnswerDotAI.github.io/oxml/"
 [tool.maturin]
 python-source = "python"
 module-name = "oxml._core"

@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         if: runner.os != 'Linux'
-      - uses: AnswerDotAI/.github/actions/sccache@main
+      - uses: AnswerDotAI/workflows/sccache@master
         if: runner.os != 'Linux'
         with:
           r2-url: ${{ secrets.SCCACHE_R2 }}
@@ -38,15 +38,15 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-        python: ['3.10', '3.11', '3.12', '3.13']
+        python: ['3.11', '3.12', '3.13']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: AnswerDotAI/.github/actions/sccache@main
+      - uses: AnswerDotAI/workflows/sccache@master
         with:
           r2-url: ${{ secrets.SCCACHE_R2 }}
-      - uses: AnswerDotAI/.github/actions/setup-uv@main
+      - uses: AnswerDotAI/workflows/setup-uv@master
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}

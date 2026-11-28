@@ -31,7 +31,7 @@ strip = true
 incremental = false
 
 [dependencies]
-pyo3 = { version = ">=0.28", features = ["extension-module", "abi3-py310"] }
+pyo3 = { version = ">=0.28", features = ["extension-module", "abi3-py311"] }
 quick-xml = { version = ">=0.42.0", features = ["encoding"] }
 zip = { version = ">=9.0.0", default-features = false, features = ["deflate-flate2-zlib-rs", "unreserved"] }
 tempfile = ">=3.27.0"
